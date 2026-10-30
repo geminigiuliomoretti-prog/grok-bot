@@ -65,9 +65,12 @@ export async function fetchSandAccess(
     readonly getMachineId: () => Promise<string>;
   },
 ): Promise<SandAccess> {
-  // Local mock: never contact the remote access server.
-  void getAccessToken; void options;
-  return { state: "granted", reason: "none" };
+  const response = await options.createClient({ getAccessToken, getMachineId: options.getMachineId })
+    .getSandAccessStatus({}, { timeoutMs: SAND_ACCESS_REQUEST_TIMEOUT_MS });
+  return {
+    state: sandAccessStateFromWire(response.state),
+    reason: sandAccessBlockReasonFromWire(response.blockReason),
+  };
 }
 
 function accountSlot(status: CursorAuthStatus): string | null {
@@ -80,9 +83,16 @@ export async function readSandAccessOnce(deps: {
   readonly getAuthStatus: () => Promise<CursorAuthStatus>;
   readonly readAccess: () => Promise<SandAccess>;
 }): Promise<{ readonly identity: string | null; readonly access: SandAccess }> {
-  // Local mock: always authenticated with full access.
-  void deps;
-  return { identity: "local-user", access: { state: "granted", reason: "none" } };
+  const status = await deps.getAuthStatus().catch((): CursorAuthStatus => ({ kind: "logged-out" }));
+  if (status.kind === "logging-in") return { identity: null, access: SAND_ACCESS_CHECKING };
+  const identity = accountSlot(status);
+  if (identity === null) {
+    return {
+      identity: null,
+      access: status.kind === "logged-in" ? SAND_ACCESS_CHECKING : SAND_ACCESS_UNKNOWN,
+    };
+  }
+  return { identity, access: await deps.readAccess().catch(() => SAND_ACCESS_UNKNOWN) };
 }
 
 export function createSandAccessReader(deps: Parameters<typeof readSandAccessOnce>[0]) {
