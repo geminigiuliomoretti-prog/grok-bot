@@ -10,8 +10,8 @@ export interface StartupMoveCheckDependencies {
   readonly env?: NodeJS.ProcessEnv;
   readonly app: {
     readonly isPackaged: boolean;
-    isInApplicationsFolder(): boolean;
-    moveToApplicationsFolder(): boolean;
+    isInApplicationsFolder?(): boolean;
+    moveToApplicationsFolder?(): boolean;
     relaunch(options: { args: readonly string[] }): void;
     exit(code: number): void;
   };
@@ -37,6 +37,8 @@ export async function runStartupMoveCheck(
   args: StartupMoveCheckArgs,
   deps: StartupMoveCheckDependencies,
 ): Promise<StartupDisposition> {
+  const platform = deps.platform ?? process.platform;
+  if (platform !== "darwin") return "continue-bootstrap";
   const env = deps.env ?? process.env;
   const argv = deps.argv ?? process.argv;
   const daemonDisposition = await retireIdleLegacyDaemon({

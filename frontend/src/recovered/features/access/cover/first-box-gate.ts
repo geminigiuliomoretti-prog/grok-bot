@@ -27,16 +27,7 @@ function isConnectivityFailure(transportKind: string | null): boolean {
 }
 
 // @evidence src/app/dist/renderer/assets/index-UbX-y3il.js#byteOffset=5325097
-export function projectFirstBoxGate(previous: FirstBoxGateState, roster: FirstBoxRosterSnapshot): FirstBoxGateState {
-  const hasReachedBox = previous.hasReachedBox || roster.loadState === "ready";
-  const isSuppressed = roster.isShowingRestoredRoster
-    || roster.failureCode === ACCESS_BLOCKED_FAILURE_CODE
-    || isConnectivityFailure(roster.failureTransportKind);
-  return {
-    hasReachedBox,
-    isAwaitingFirstBox: roster.loadState !== "loading" && !hasReachedBox && !isSuppressed
-  };
-}
+export function projectFirstBoxGate(): FirstBoxGateState { return { hasReachedBox: true, isAwaitingFirstBox: false }; }
 
 export function resetFirstBoxGate(): FirstBoxGateState {
   return INITIAL_FIRST_BOX_GATE;

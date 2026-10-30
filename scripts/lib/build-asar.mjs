@@ -138,8 +138,11 @@ export async function buildAsar({
   unpackedRoot = builtAsarUnpacked,
 } = {}) {
   const runtimeApp = await resolveRuntimeApp();
-  const resources = path.join(runtimeApp, "Contents", "Resources");
+  const resources = process.platform === "win32"
+    ? path.join(runtimeApp, "resources")
+    : path.join(runtimeApp, "Contents", "Resources");
   const runtimeUnpacked = path.join(resources, "app.asar.unpacked", "dist");
+
 
   await rm(buildRoot, { recursive: true, force: true });
   await mkdir(buildRoot, { recursive: true });

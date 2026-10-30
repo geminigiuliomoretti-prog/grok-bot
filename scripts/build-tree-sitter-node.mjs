@@ -22,8 +22,10 @@ function runNodeGyp(target) {
     const child = spawn(command, ["rebuild", "--directory", target, "--release"], {
       cwd: repoRoot,
       env: environment,
+      shell: process.platform === "win32",
       stdio: ["ignore", "inherit", "inherit"],
     });
+
     child.once("error", reject);
     child.once("exit", code => code === 0 ? resolve() : reject(new Error(`node-gyp exited with ${code} for ${path.basename(target)}`)));
   });
@@ -44,7 +46,31 @@ export async function ensureNodeTreeSitterRuntime() {
   const cacheRoot = nodeRuntimeCacheRoot();
   if (await hasNodeRuntimeBinaries(cacheRoot)) return cacheRoot;
 
+  if (process.platform === "win32") {
+    // Re-use prebuilt win32 runtime binaries from runtime-win
+    const winDeps = path.join(repoRoot, ".cache", "runtime-win", "resources", "app.asar.unpacked", "dist", "deps");
+    await mkdir(cacheRoot, { recursive: true });
+    for (const packageName of [...packages, ...dependencies]) {
+      const src = path.join(winDeps, packageName);
+      const dst = path.join(cacheRoot, packageName);
+      try {
+        await cp(src, dst, { recursive: true, dereference: true });
+      } catch {
+        await cp(path.join(repoRoot, "node_modules", packageName), dst, { recursive: true, dereference: true });
+      }
+    }
+    // Also copy tree-sitter-bash prebuilt to build/Release if needed
+    const bashPrebuild = path.join(winDeps, "tree-sitter-bash", "prebuilds", "win32-x64", "tree-sitter-bash.node");
+    const bashRelease = path.join(cacheRoot, "tree-sitter-bash", "build", "Release");
+    await mkdir(bashRelease, { recursive: true });
+    try {
+      await cp(bashPrebuild, path.join(bashRelease, "tree_sitter_bash_binding.node"));
+    } catch {}
+    return cacheRoot;
+  }
+
   const temporaryRoot = await mkdtemp(path.join(repoRoot, ".tmp-tree-sitter-node-"));
+
   try {
     const packageRoot = path.join(temporaryRoot, "node_modules");
     await mkdir(packageRoot, { recursive: true });

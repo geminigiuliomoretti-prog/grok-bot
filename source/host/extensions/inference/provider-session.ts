@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -42,8 +42,58 @@ function persistedSecrets(): Record<string, string> {
   } catch { return {}; }
 }
 
+function loadEnvSecrets(): Record<string, string> {
+  const result: Record<string, string> = {};
+  const candidates = [
+    join(process.cwd(), ".env"),
+    join(getSandRootDir(), ".env"),
+    join(homedir(), ".grokbot", ".env"),
+    join(homedir(), ".cursor", ".env"),
+  ];
+  for (const candidate of candidates) {
+    if (!existsSync(candidate)) continue;
+    try {
+      const content = readFileSync(candidate, "utf8");
+      for (const line of content.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eq = trimmed.indexOf("=");
+        if (eq > 0) {
+          const key = trimmed.slice(0, eq).trim();
+          let val = trimmed.slice(eq + 1).trim();
+          if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+          }
+          if (key && !result[key]) result[key] = val;
+        }
+      }
+    } catch {}
+  }
+  return result;
+}
+
+function getSecret(key: string): string | undefined {
+  const fromEnv = process.env[key]?.trim();
+  if (fromEnv && fromEnv.length > 0) return fromEnv;
+  const fromDotEnv = loadEnvSecrets()[key]?.trim();
+  if (fromDotEnv && fromDotEnv.length > 0) return fromDotEnv;
+  const fromPersisted = persistedSecrets()[key]?.trim();
+  if (fromPersisted && fromPersisted.length > 0) return fromPersisted;
+  return undefined;
+}
+
+function geminiCredential(): string {
+  const value = getSecret("GEMINI_API_KEY");
+  if (value == null || value.length === 0) throw new Error("Google Gemini needs GEMINI_API_KEY. Add it in Settings → Router or in .env.");
+  return value;
+}
+
+function configuredGeminiModel(): string {
+  return process.env.SAND_GEMINI_MODEL?.trim() || "gemini-2.5-pro";
+}
+
 function openRouterCredential(): string {
-  const value = process.env.OPENROUTER_API_KEY?.trim() || persistedSecrets().OPENROUTER_API_KEY?.trim();
+  const value = getSecret("OPENROUTER_API_KEY");
   if (value == null || value.length === 0) throw new Error("OpenRouter needs OPENROUTER_API_KEY. Add it in Settings → Router.");
   return value;
 }
@@ -244,6 +294,16 @@ function toToolSet(definitions: readonly Loose[] | undefined, executeTool?: Rout
   return Object.keys(tools).length === 0 ? undefined : tools;
 }
 
+function geminiExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void) {
+  const id = configuredGeminiModel();
+  const model: LanguageModelV1 = createOpenAI({ apiKey: geminiCredential(), baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/", compatibility: "compatible", name: "gemini" }).chat(id as any);
+  const tools = toToolSet(definitions, executeTool);
+  const result = streamText({ model, system: GROK_ROUTER_SYSTEM_PROMPT, messages: messages as CoreMessage[], ...(tools === undefined ? {} : { tools }), toolCallStreaming: true, maxSteps: tools === undefined ? 1 : 8 });
+  const extendedUsage = result.usage.then(value => ({ inputTokens: value.promptTokens, outputTokens: value.completionTokens, cacheReadTokens: 0, cacheWriteTokens: 0, maxTokens: 0 }));
+  if (onUsage != null) void extendedUsage.then(onUsage);
+  return { fullStream: result.fullStream, response: result.response, usage: result.usage, extendedUsage, providerMetadata: result.providerMetadata, invocationId: Promise.resolve(invocationId) };
+}
+
 function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void) {
   const id = process.env.SAND_OPENROUTER_MODEL?.trim() || "openai/gpt-5.2";
   const model: LanguageModelV1 = createOpenAI({ apiKey: openRouterCredential(), baseURL: "https://openrouter.ai/api/v1", compatibility: "compatible", name: "openrouter", headers: { "HTTP-Referer": "https://github.com/grok-bot-reconstructed", "X-Title": "Grok Bot Reconstructed" } }).chat(id as any);
@@ -256,15 +316,22 @@ function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: 
 
 class ProviderPromptExecutor extends BasePromptExecutor<ProviderMessage> {
   constructor(readonly provider: RoutedProvider, initialMessages?: readonly ProviderMessage[], readonly onUsage?: (usage: UsageRecord) => void) { super(new BasePromptBuilder(initialMessages)); }
-  stream(_ctx: unknown, invocationId = crypto.randomUUID(), definitions?: readonly Loose[]) {
-    if (this.provider === "codex") return codexExecutor(this.getMessages(), invocationId, definitions, undefined, this.onUsage);
+  stream(_ctx: unknown, invocationId = crypto.randomUUID(), definitions?: readonly Loose[], executeTool?: RoutedToolExecutor) {
+    if (this.provider === "codex") return codexExecutor(this.getMessages(), invocationId, definitions, executeTool, this.onUsage);
     if (this.provider === "claude-code") return claudeExecutor(this.getMessages(), invocationId, this.onUsage);
-    return openRouterExecutor(this.getMessages(), invocationId, definitions, undefined, this.onUsage);
+    if (this.provider === "gemini") return geminiExecutor(this.getMessages(), invocationId, definitions, executeTool, this.onUsage);
+    return openRouterExecutor(this.getMessages(), invocationId, definitions, executeTool, this.onUsage);
   }
 }
 
 export function createProviderPromptSession(provider: RoutedProvider): { getModelId(): string; getExecutor(state?: unknown): PromptExecutor } {
-  const modelId = provider === "codex" ? configuredCodexModel() : provider === "claude-code" ? "claude-code" : process.env.SAND_OPENROUTER_MODEL?.trim() || "openai/gpt-5.2";
+  const modelId = provider === "codex"
+    ? configuredCodexModel()
+    : provider === "claude-code"
+      ? "claude-code"
+      : provider === "gemini"
+        ? configuredGeminiModel()
+        : process.env.SAND_OPENROUTER_MODEL?.trim() || "openai/gpt-5.2";
   return { getModelId: () => modelId, getExecutor: state => new ProviderPromptExecutor(provider, Array.isArray(state) ? state as ProviderMessage[] : undefined, usage => recordRoutedUsage(provider, usage)) };
 }
 
@@ -280,7 +347,9 @@ export async function runRoutedProviderText(provider: RoutedProvider, messages: 
     ? codexExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage)
     : provider === "claude-code"
       ? claudeExecutor(messages, invocationId, onUsage, options?.mcpServerUrl)
-      : openRouterExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage);
+      : provider === "gemini"
+        ? geminiExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage)
+        : openRouterExecutor(messages, invocationId, options?.tools, options?.executeTool, onUsage);
   let text = "";
   for await (const event of result.fullStream) {
     if (event.type === "text-delta" && typeof event.textDelta === "string") {

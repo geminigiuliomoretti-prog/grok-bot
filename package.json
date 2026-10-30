@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Source-oriented reconstruction of the publicly shipped Grok Bot 0.18.0 macOS application",
   "engines": {
-    "node": ">=26.5.0 <27"
+    "node": ">=24.0.0 <27"
   },
   "scripts": {
     "bootstrap": "node scripts/bootstrap-runtime.mjs",
@@ -23,7 +23,8 @@
     "test": "node --test tests/*.test.mjs",
     "typecheck": "tsc --project frontend/tsconfig.json",
     "source:typecheck": "tsc --project source/tsconfig.json",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "package:win": "node scripts/package-windows.mjs"
   },
   "devDependencies": {
     "@electron/asar": "4.2.1",

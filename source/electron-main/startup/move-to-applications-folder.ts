@@ -5,8 +5,8 @@ export interface MoveToApplicationsFolderOptions {
   readonly isLabBuild: boolean;
   readonly app: {
     readonly isPackaged: boolean;
-    isInApplicationsFolder(): boolean;
-    moveToApplicationsFolder(): boolean;
+    isInApplicationsFolder?(): boolean;
+    moveToApplicationsFolder?(): boolean;
   };
   confirmMove(): Promise<boolean>;
   reportFailure(error: unknown): Promise<void>;
@@ -16,11 +16,12 @@ export interface MoveToApplicationsFolderOptions {
 export async function moveToApplicationsFolderIfNeeded(
   options: MoveToApplicationsFolderOptions,
 ): Promise<MoveToApplicationsFolderResult> {
-  if (options.platform !== "darwin" || !options.app.isPackaged || options.isLabBuild) return "continue-bootstrap";
+  const platform = options.platform ?? process.platform;
+  if (platform !== "darwin" || !options.app?.isPackaged || options.isLabBuild) return "continue-bootstrap";
   try {
-    if (options.app.isInApplicationsFolder()) return "continue-bootstrap";
+    if (typeof options.app.isInApplicationsFolder !== "function" || options.app.isInApplicationsFolder()) return "continue-bootstrap";
     if (!await options.confirmMove()) return "continue-bootstrap";
-    return options.app.moveToApplicationsFolder() ? "stop-bootstrap" : "continue-bootstrap";
+    return options.app.moveToApplicationsFolder?.() ? "stop-bootstrap" : "continue-bootstrap";
   } catch (error) {
     try {
       await options.reportFailure(error);

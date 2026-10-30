@@ -13,6 +13,27 @@ import type { GatewayConnection } from "./gateway-descriptor-cache.js";
 export const LOCAL_DOCKER_BOX_IMAGE = "public.ecr.aws/k0i0n2g5/cursorenvironments/universal:sand-box-latest";
 export const LOCAL_DOCKER_BOX_CONTAINER = "grok-bot-local-vm";
 export const LOCAL_DOCKER_GATEWAY_URL = "http://127.0.0.1:1340";
+
+export function getAgentContainerName(agentId?: string): string {
+  if (!agentId || agentId === "default") return LOCAL_DOCKER_BOX_CONTAINER;
+  const cleanId = agentId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 32);
+  return `grok-box-${cleanId}`;
+}
+
+export function getAgentPortOffset(agentId?: string): number {
+  if (!agentId || agentId === "default") return 0;
+  let hash = 0;
+  for (let i = 0; i < agentId.length; i++) {
+    hash = ((hash << 5) - hash) + agentId.charCodeAt(i);
+    hash |= 0;
+  }
+  return (Math.abs(hash) % 50) * 10;
+}
+
+export function getAgentGatewayUrl(agentId?: string): string {
+  const offset = getAgentPortOffset(agentId);
+  return `http://127.0.0.1:${1340 + offset}`;
+}
 export const LOCAL_DOCKER_OWNER_LABEL = "com.grok-bot.local-vm=1";
 export const LOCAL_DOCKER_SCHEMA_VERSION = "6";
 const READY_TIMEOUT_MS = 180_000;
@@ -74,9 +95,9 @@ async function readOrCreateToken(settingsPath: string): Promise<string> {
   return token;
 }
 
-async function gatewayReady(token: string): Promise<boolean> {
+async function gatewayReady(token: string, gatewayUrl = LOCAL_DOCKER_GATEWAY_URL): Promise<boolean> {
   try {
-    const response = await fetch(`${LOCAL_DOCKER_GATEWAY_URL}/health`, {
+    const response = await fetch(`${gatewayUrl}/health`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(2_000),
     });
@@ -84,8 +105,8 @@ async function gatewayReady(token: string): Promise<boolean> {
   } catch { return false; }
 }
 
-async function inspectContainer(): Promise<{ exists: boolean; running: boolean; owned: boolean; image: string; hostSha256: string; hasInferenceCredential: boolean; schemaVersion: string }> {
-  const result = await runDocker(["inspect", "--format", "{{json .}}", LOCAL_DOCKER_BOX_CONTAINER]);
+async function inspectContainer(containerName = LOCAL_DOCKER_BOX_CONTAINER): Promise<{ exists: boolean; running: boolean; owned: boolean; image: string; hostSha256: string; hasInferenceCredential: boolean; schemaVersion: string }> {
+  const result = await runDocker(["inspect", "--format", "{{json .}}", containerName]);
   if (!result.ok) return { exists: false, running: false, owned: false, image: "", hostSha256: "", hasInferenceCredential: false, schemaVersion: "" };
   try {
     const value = JSON.parse(result.output) as { State?: { Running?: unknown }; Config?: { Image?: unknown; Labels?: Record<string, unknown> } };
@@ -162,28 +183,31 @@ async function localAuthMountArguments(): Promise<string[]> {
   return mounts;
 }
 
-async function ensureLocalDockerBox(settingsPath: string, inferenceCredential?: InferenceCredential): Promise<GatewayConnection> {
+async function ensureLocalDockerBox(settingsPath: string, inferenceCredential?: InferenceCredential, agentId?: string): Promise<GatewayConnection> {
+  const containerName = getAgentContainerName(agentId);
+  const offset = getAgentPortOffset(agentId);
+  const gatewayUrl = getAgentGatewayUrl(agentId);
   const token = await readOrCreateToken(settingsPath);
   const hostBundle = await stageCurrentHostBundle(settingsPath);
   const inferenceFile = inferenceCredential == null ? undefined : await persistInferenceCredential(settingsPath, inferenceCredential);
   const daemon = await runDocker(["info", "--format", "{{.ServerVersion}}"]).catch(() => ({ ok: false, output: "Docker is not installed." }));
   if (!daemon.ok) throw new Error(`Local Docker VM is selected, but Docker is unavailable: ${daemon.output || "start Docker and try again"}`);
-  const inspected = await inspectContainer();
-  if (inspected.exists && !inspected.owned) throw new Error(`Local Docker VM cannot use ${LOCAL_DOCKER_BOX_CONTAINER}: an unowned container already has that name.`);
+  const inspected = await inspectContainer(containerName);
+  if (inspected.exists && !inspected.owned) throw new Error(`Local Docker VM cannot use ${containerName}: an unowned container already has that name.`);
   if (inspected.exists && inspected.image !== LOCAL_DOCKER_BOX_IMAGE) throw new Error(`Local Docker VM container uses unexpected image ${inspected.image}. Remove it explicitly before changing images.`);
   if (inspected.exists && (inspected.schemaVersion !== LOCAL_DOCKER_SCHEMA_VERSION || inspected.hostSha256 !== hostBundle.sha256 || (inferenceCredential != null && !inspected.hasInferenceCredential))) {
-    const removed = await runDocker(["rm", "--force", LOCAL_DOCKER_BOX_CONTAINER]);
+    const removed = await runDocker(["rm", "--force", containerName]);
     if (!removed.ok) throw new Error(`Could not replace the local VM with the current app runtime: ${removed.output}`);
   }
   const shouldReplace = inspected.exists && (inspected.schemaVersion !== LOCAL_DOCKER_SCHEMA_VERSION || inspected.hostSha256 !== hostBundle.sha256 || (inferenceCredential != null && !inspected.hasInferenceCredential));
-  const current = shouldReplace ? await inspectContainer() : inspected;
+  const current = shouldReplace ? await inspectContainer(containerName) : inspected;
   if (current.exists && !current.running) {
-    const started = await runDocker(["start", LOCAL_DOCKER_BOX_CONTAINER]);
+    const started = await runDocker(["start", containerName]);
     if (!started.ok) throw new Error(`Could not start the local Docker VM: ${started.output}`);
   } else if (!current.exists) {
     const authMounts = await localAuthMountArguments();
     const created = await runDocker([
-      "run", "--detach", "--name", LOCAL_DOCKER_BOX_CONTAINER,
+      "run", "--detach", "--name", containerName,
       "--label", LOCAL_DOCKER_OWNER_LABEL, "--label", `com.grok-bot.local-vm.host-sha256=${hostBundle.sha256}`,
       "--label", `com.grok-bot.local-vm.box-exec-daemon-sha256=${hostBundle.boxExecDaemonSha256}`,
       "--label", `com.grok-bot.local-vm.inference-credential=${inferenceCredential == null ? "0" : "1"}`,
@@ -191,9 +215,9 @@ async function ensureLocalDockerBox(settingsPath: string, inferenceCredential?: 
       "--platform", "linux/amd64", "--restart", "unless-stopped",
       "--env", "SAND_SUPERVISOR_ENABLED=1", "--env", "SAND_BOX_AUTO_UPDATE=0", "--env", "SAND_USE_EXISTING_BOX_EXEC_DAEMON=1", "--env", "SAND_TREE_SITTER_NODE_DEPS=/home/box/deps", "--env", "NODE_PATH=/home/box/deps", "--env", "SAND_GATEWAY_BIND_HOST=0.0.0.0", "--env", "SAND_HOST_PORT=1340", "--env", `SAND_GATEWAY_TOKEN=${token}`,
       ...(inferenceCredential == null ? [] : ["--env", "SAND_DEV_INFERENCE_TOKEN_FILE=/run/grok-bot/inference.json", "--env", `SAND_BACKEND_URL=${inferenceCredential.backendUrl}`]),
-      "--publish", "127.0.0.1:1337:1337", "--publish", "127.0.0.1:1339:1339", "--publish", "127.0.0.1:1340:1340",
-      "--publish", "127.0.0.1:6080:6080", "--publish", "127.0.0.1:6081:6081", "--publish", "127.0.0.1:8790:8790",
-      "--volume", "grok-bot-local-vm-workspace:/workspace", "--volume", "grok-bot-local-vm-data:/home/box/sand-data",
+      "--publish", `127.0.0.1:${1337 + offset}:1337`, "--publish", `127.0.0.1:${1339 + offset}:1339`, "--publish", `127.0.0.1:${1340 + offset}:1340`,
+      "--publish", `127.0.0.1:${6080 + offset}:6080`, "--publish", `127.0.0.1:${6081 + offset}:6081`, "--publish", `127.0.0.1:${8790 + offset}:8790`,
+      "--volume", `${containerName}-workspace:/workspace`, "--volume", `${containerName}-data:/home/box/sand-data`,
       "--mount", `type=bind,src=${hostBundle.path},dst=/home/box/sand-host/host-main.cjs,readonly`,
       "--mount", `type=bind,src=${dirname(hostBundle.boxExecDaemonPath)},dst=/home/box/box-exec-daemon,readonly`,
       ...(inferenceFile == null ? [] : ["--mount", `type=bind,src=${dirname(inferenceFile)},dst=/run/grok-bot,readonly`]),
@@ -204,10 +228,10 @@ async function ensureLocalDockerBox(settingsPath: string, inferenceCredential?: 
   }
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    if (await gatewayReady(token)) return { baseUrl: LOCAL_DOCKER_GATEWAY_URL, token };
-    const state = await inspectContainer();
+    if (await gatewayReady(token, gatewayUrl)) return { baseUrl: gatewayUrl, token };
+    const state = await inspectContainer(containerName);
     if (!state.running) {
-      const logs = await runDocker(["logs", "--tail", "80", LOCAL_DOCKER_BOX_CONTAINER]);
+      const logs = await runDocker(["logs", "--tail", "80", containerName]);
       throw new Error(`Local Docker VM stopped before its gateway became ready.\n${logs.output}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));

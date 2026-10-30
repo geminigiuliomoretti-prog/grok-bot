@@ -46,3 +46,11 @@ export const fidelityName = "Grok Bot 0.18 Fidelity";
 export const dmgUrl = "https://downloads.cursor.com/grokbot/stable/darwin-arm64/0.18.0/Grok_Bot_0.18.0.dmg";
 export const dmgSha256 = "a253ccd8aab01e083f9812a0264354c5034d8ba7f0610bbb557e82ae77d203eb";
 export const upstreamAsarSha256 = "6665408168466f9cacc6087e917890c17f59d2e2e9c2404a5c4a59ad79c1de58";
+
+export const cachedSetupExe = path.join(cacheDir, "downloads", "Grok_Bot_0.18.0_Setup.exe");
+export const archivedSetupExe = path.join(repoRoot, "research-archives", "original", "0.18.0", "windows-x64", "Grok_Bot_0.18.0_Setup.exe");
+export const setupExeUrl = "https://downloads.cursor.com/grokbot/stable/win32-x64/0.18.0/Grok_Bot_0.18.0_Setup.exe";
+export const setupExeSha256 = "464079a15ef5fa8b61ccea8fffcc78f63cfcf6df65fb0ad5e725d8b95f7e437e";
+export const cachedRuntimeWin = path.join(cacheDir, "runtime-win");
+export const outputWinDir = path.join(outputDir, "win-unpacked");
+

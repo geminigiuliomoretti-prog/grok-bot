@@ -1,4 +1,8 @@
 
+import { spawnSync } from "node:child_process";
+import { existsSync, promises as fsPromises } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+
 import {
   parseCoordinatorAgentThreadRequest,
   parseCoordinatorTranscriptWindowRequest,
@@ -138,19 +142,151 @@ export function createHostGatewayApi(
     return await method(sharing, name)(args);
   };
 
+  const resolveAutomationScriptPath = (): string => {
+    const candidates = [
+      join(process.cwd(), "scripts", "windows_host_automation.py"),
+      join(process.cwd(), "repo", "scripts", "windows_host_automation.py"),
+      resolve(__dirname, "../../scripts/windows_host_automation.py"),
+      resolve(__dirname, "../../../scripts/windows_host_automation.py"),
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return candidate;
+    }
+    return candidates[0]!;
+  };
+
+  const HOST_ROUTED_TOOLS = [
+    {
+      name: "host_computer_use",
+      providerIdentifier: "host",
+      toolName: "host_computer_use",
+      description: "Direct physical GUI control over the user's Windows 11 host PC. Use this to view screens and interact with desktop apps like Antigravity. Supported actions: 'focus_window' (title: window substring, e.g. 'Antigravity'), 'screenshot' (returns base64 image of current display), 'click' (x, y, button, count), 'move' (x, y), 'drag' (startX, startY, endX, endY), 'scroll' (deltaY), 'paste_text' (text: string, press_enter: boolean - pastes text instantly via clipboard Ctrl+V into focused input), 'press_key' (key: shortcut, e.g. 'ctrl+enter', 'enter', 'esc').",
+      inputSchema: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: ["focus_window", "screenshot", "click", "move", "drag", "scroll", "paste_text", "press_key", "type"], description: "Action to perform on Windows host" },
+          title: { type: "string", description: "Window title substring to focus (e.g. 'Antigravity')" },
+          window_title: { type: "string", description: "Alias for title" },
+          x: { type: "number", description: "Screen X coordinate" },
+          y: { type: "number", description: "Screen Y coordinate" },
+          startX: { type: "number", description: "Drag start X" },
+          startY: { type: "number", description: "Drag start Y" },
+          endX: { type: "number", description: "Drag end X" },
+          endY: { type: "number", description: "Drag end Y" },
+          deltaY: { type: "number", description: "Scroll amount (negative for down, positive for up)" },
+          text: { type: "string", description: "Text to paste or type" },
+          press_enter: { type: "boolean", description: "Whether to press enter after paste_text" },
+          key: { type: "string", description: "Key combo (e.g. 'ctrl+enter')" },
+          button: { type: "string", enum: ["left", "right", "middle"], description: "Mouse button" },
+        },
+        required: ["action"],
+      },
+    },
+    {
+      name: "bash",
+      providerIdentifier: "host",
+      toolName: "bash",
+      description: "Execute a command on the host shell (PowerShell on Windows).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          command: { type: "string", description: "Shell command string to execute" },
+        },
+        required: ["command"],
+      },
+    },
+    {
+      name: "read_file",
+      providerIdentifier: "host",
+      toolName: "read_file",
+      description: "Read full text contents of a file on the host filesystem.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Path to file" },
+        },
+        required: ["path"],
+      },
+    },
+    {
+      name: "write_file",
+      providerIdentifier: "host",
+      toolName: "write_file",
+      description: "Write full text contents to a file on the host filesystem.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Path to file" },
+          content: { type: "string", description: "Content to write" },
+        },
+        required: ["path", "content"],
+      },
+    },
+  ];
+
   const listRoutedMcpTools = async () => {
     const extension = deps.extensions.api("mcp");
     const mcp = extension.mcp;
     const tools = await method(mcp, "listTools")({});
-    return tools.map((tool: any) => ({
+    const mcpTools = tools.map((tool: any) => ({
       name: tool.name,
       providerIdentifier: tool.providerIdentifier,
       toolName: tool.toolName,
       ...(tool.description == null ? {} : { description: tool.description }),
       ...(tool.inputSchema == null ? {} : { inputSchema: typeof tool.inputSchema.toJson === "function" ? tool.inputSchema.toJson() : tool.inputSchema }),
     }));
+    return [...HOST_ROUTED_TOOLS, ...mcpTools];
   };
+
   const executeRoutedMcpTool = async (args: any) => {
+    const effectiveToolName = args.name || args.toolName;
+    const toolArgs = args.args ?? {};
+
+    if (effectiveToolName === "host_computer_use") {
+      const script = resolveAutomationScriptPath();
+      const proc = spawnSync("python", [script, JSON.stringify(toolArgs)], {
+        encoding: "utf8",
+        timeout: 45_000,
+        windowsHide: true,
+      });
+      if (proc.error) return { success: false, error: proc.error.message };
+      try {
+        return JSON.parse(proc.stdout.trim() || "{}");
+      } catch {
+        return { success: proc.status === 0, stdout: proc.stdout, stderr: proc.stderr };
+      }
+    }
+
+    if (effectiveToolName === "bash") {
+      const cmd = String(toolArgs?.command ?? "");
+      const shell = process.platform === "win32" ? "powershell.exe" : "/bin/bash";
+      const shellArgs = process.platform === "win32" ? ["-NoProfile", "-NonInteractive", "-Command", cmd] : ["-c", cmd];
+      const proc = spawnSync(shell, shellArgs, { encoding: "utf8", timeout: 60_000, windowsHide: true });
+      return { stdout: proc.stdout ?? "", stderr: proc.stderr ?? "", exitCode: proc.status ?? 0 };
+    }
+
+    if (effectiveToolName === "read_file") {
+      try {
+        const filePath = String(toolArgs?.path ?? "");
+        const content = await fsPromises.readFile(filePath, "utf8");
+        return { content };
+      } catch (err: any) {
+        return { error: String(err?.message ?? err) };
+      }
+    }
+
+    if (effectiveToolName === "write_file") {
+      try {
+        const filePath = String(toolArgs?.path ?? "");
+        const content = String(toolArgs?.content ?? "");
+        await fsPromises.mkdir(dirname(filePath), { recursive: true });
+        await fsPromises.writeFile(filePath, content, "utf8");
+        return { success: true, path: filePath };
+      } catch (err: any) {
+        return { error: String(err?.message ?? err) };
+      }
+    }
+
     const mcp = deps.extensions.api("mcp").mcp;
     const executor = method(mcp, "createExecutor")(undefined, undefined, { agentId: args.agentId });
     return await method(executor, "execute")({}, {

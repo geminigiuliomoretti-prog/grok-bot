@@ -2,7 +2,8 @@ import { createHash } from "node:crypto";
 import { access, cp, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { extractAll } from "@electron/asar";
-import { cacheDir, cachedRuntimeApp, sourceAppDir, upstreamAsarSha256, upstreamVersion } from "./config.mjs";
+import { cacheDir, cachedRuntimeApp, cachedRuntimeWin, sourceAppDir, upstreamAsarSha256, upstreamVersion } from "./config.mjs";
+
 import { capture, run } from "./process.mjs";
 import { SYSTEM_TOOLS } from "./system-tools.mjs";
 
@@ -16,6 +17,14 @@ async function exists(target) {
 }
 
 export async function validateRuntimeApp(appPath) {
+  if (process.platform === "win32") {
+    const executable = path.join(appPath, "Grok Bot.exe");
+    const unpacked = path.join(appPath, "resources", "app.asar.unpacked");
+    if (!(await stat(executable)).isFile() || !(await stat(unpacked)).isDirectory()) {
+      throw new Error(`Incomplete Grok Bot Windows runtime at ${appPath}`);
+    }
+    return appPath;
+  }
   const infoPlist = path.join(appPath, "Contents", "Info.plist");
   const executable = path.join(appPath, "Contents", "MacOS", "Grok Bot");
   const unpacked = path.join(appPath, "Contents", "Resources", "app.asar.unpacked");
@@ -29,16 +38,19 @@ export async function validateRuntimeApp(appPath) {
   return appPath;
 }
 
+
 export async function resolveRuntimeApp() {
   const configured = process.env.GROK_BOT_018_APP?.trim();
   if (configured) {
     return await validateRuntimeApp(path.resolve(configured));
   }
-  if (await exists(cachedRuntimeApp)) {
-    return await validateRuntimeApp(cachedRuntimeApp);
+  const runtimeTarget = process.platform === "win32" ? cachedRuntimeWin : cachedRuntimeApp;
+  if (await exists(runtimeTarget)) {
+    return await validateRuntimeApp(runtimeTarget);
   }
   throw new Error("Missing 0.18.0 runtime. Run `npm run bootstrap` first.");
 }
+
 
 export async function cacheRuntimeFromApp(source) {
   const validated = await validateRuntimeApp(path.resolve(source));
@@ -87,9 +99,12 @@ export async function hydrateSourcePayloadFromAsar(archive, {
 }
 
 export async function hydrateSourcePayloadFromRuntime(runtimeApp, options = {}) {
-  const archive = path.join(await validateRuntimeApp(runtimeApp), "Contents", "Resources", "app.asar");
+  const archive = process.platform === "win32"
+    ? path.join(await validateRuntimeApp(runtimeApp), "resources", "app.asar")
+    : path.join(await validateRuntimeApp(runtimeApp), "Contents", "Resources", "app.asar");
   return hydrateSourcePayloadFromAsar(archive, options);
 }
+
 
 export async function copyTree(source, destination) {
   await rm(destination, { recursive: true, force: true });

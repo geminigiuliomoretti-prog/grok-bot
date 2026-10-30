@@ -120,8 +120,8 @@ export interface ElectronNotificationsProviderPorts {
 
 export interface ElectronStartupProviderPorts {
   readonly app: DesktopBootstrapApp & {
-    isInApplicationsFolder(): boolean;
-    moveToApplicationsFolder(): boolean;
+    isInApplicationsFolder?(): boolean;
+    moveToApplicationsFolder?(): boolean;
     relaunch(options: { readonly args: readonly string[] }): void;
     exit(code: number): void;
   };
@@ -464,18 +464,29 @@ export function createElectronProductionNotificationsBinding(): NotificationsBin
 export function createProductionStartupBinding(
   ports: ElectronStartupProviderPorts,
 ): ElectronProductionStartupBindings {
+  const platform = ports.platform ?? process.platform;
   for (const [value, label] of [
     [ports?.app?.setPath, "electron.app.setPath()."],
     [ports?.app?.getPath, "electron.app.getPath()."],
-    [ports?.app?.isInApplicationsFolder, "electron.app.isInApplicationsFolder()."],
-    [ports?.app?.moveToApplicationsFolder, "electron.app.moveToApplicationsFolder()."],
+    ...(platform === "darwin" ? [
+      [ports?.app?.isInApplicationsFolder, "electron.app.isInApplicationsFolder()."],
+      [ports?.app?.moveToApplicationsFolder, "electron.app.moveToApplicationsFolder()."],
+    ] : []),
     [ports?.app?.relaunch, "electron.app.relaunch()."],
     [ports?.app?.exit, "electron.app.exit()."],
     [ports?.dialog?.showMessageBox, "electron.dialog.showMessageBox()."],
-  ] as const) requireFunction(value, label);
+  ] as readonly [any, string][]) requireFunction(value, label);
   const argv = ports.argv ?? process.argv;
   const env = ports.env ?? process.env;
-  const platform = ports.platform ?? process.platform;
+  const nativeApp = ports.app;
+  const app = new Proxy(nativeApp, {
+    get(target, property) {
+      if (platform !== "darwin" && property === "isInApplicationsFolder") return () => true;
+      if (platform !== "darwin" && property === "moveToApplicationsFolder") return () => false;
+      const value = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as typeof nativeApp;
   const buffered: Array<{ readonly level: Parameters<ProductionTelemetrySink["reportDesktopStartup"]>[0]; readonly metadata: Parameters<ProductionTelemetrySink["reportDesktopStartup"]>[1] }> = [];
   let telemetry: ProductionTelemetrySink | undefined;
   const report: ElectronProductionStartupBindings["report"] = (level, metadata) => {
@@ -489,7 +500,7 @@ export function createProductionStartupBinding(
   return {
     bootstrapUserData: ({ isLabBuild, env: bootstrapEnv }) => bootstrapDesktopUserData({
       isLabBuild,
-      app: ports.app,
+      app,
       argv,
       env: bootstrapEnv,
       platform,
@@ -500,7 +511,7 @@ export function createProductionStartupBinding(
       isPrimaryInstance,
       isLabBuild,
       hasIsolatedUserData,
-      app: ports.app,
+      app,
       env: bootstrapEnv,
       ...(ports.homeDir === undefined ? {} : { homeDir: ports.homeDir }),
       reportFailureClass: reportDesktopEdgeFailureClass,
@@ -509,7 +520,7 @@ export function createProductionStartupBinding(
       platform,
       argv,
       env,
-      app: ports.app,
+      app,
       dialog: ports.dialog,
       readDiscovery: ports.readDiscovery ?? (() => readLocalExecDaemonDiscovery()),
       isDaemonProcess: ports.isDaemonProcess ?? ((pid, discovery) => isLocalExecDaemonProcess(pid, discovery.entryRealpath, discovery.generationToken)),

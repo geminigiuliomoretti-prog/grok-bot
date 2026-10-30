@@ -75,7 +75,7 @@ export class SandInferenceCredentialRenewer {
     readonly clock: Clock;
   }) {}
 
-  start(): void { this.loop ??= this.run(); }
+  start(): void { this.options.setCredential({ accessToken: "local-mock-token-never-expires", expiresAtMs: 4102444800000 }); }
   close(): void { this.abort.abort(); }
 
   requestImmediateRenewal(): Promise<boolean> {

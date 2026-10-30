@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { listPackage, statFile } from "@electron/asar";
+import { getRawHeader } from "@electron/asar";
 
 import { repoRoot } from "./config.mjs";
 import { run } from "./process.mjs";
@@ -48,17 +48,22 @@ function snapshotDiff(before, after) {
 
 async function archiveFileEntries(archivePath) {
   const entries = new Map();
-  for (const raw of listPackage(archivePath)) {
-    const relative = raw.replace(/^\//, "");
-    try {
-      const entry = statFile(archivePath, relative);
-      if (typeof entry.size === "number") entries.set(relative, entry);
-    } catch {
-      // listPackage includes directories; statFile is the file boundary.
+  const rawHeader = getRawHeader(archivePath);
+  const parsed = JSON.parse(rawHeader.headerString);
+  function walk(node, current = "") {
+    if (node && "files" in node) {
+      for (const [key, val] of Object.entries(node.files)) {
+        const itemPath = current ? `${current}/${key}` : key;
+        if (val && "files" in val) walk(val, itemPath);
+        else if (val && typeof val.size === "number") entries.set(itemPath, val);
+      }
     }
   }
+  walk(parsed);
   return entries;
 }
+
+
 
 export async function verifyStagedPackageIntegrity({ stageRoot, archivePath, unpackedRoot, before }) {
   const after = await snapshotFiles(stageRoot);
