@@ -10,6 +10,8 @@ const USAGE_BEFORE = 'Z=x==="usage"?a.jsx(Te,{children:a.jsx(Na,{})}):null';
 const USAGE_AFTER = 'Z=x==="usage"?a.jsx(Te,{children:a.jsx(RRouterUsage,{})}):null';
 const ONBOARDING_BOOT_GATE_BEFORE = 'return t.status!=="ready"?{step:n4e,dailyTools:[],draft:Ptt}:{step:kMt(e.step,s),dailyTools:e.dailyTools,draft:e.draft}}';
 const ONBOARDING_BOOT_GATE_AFTER = 'return{step:kMt(e.step,s),dailyTools:e.dailyTools,draft:e.draft}}';
+const FIRST_BOX_REOPEN_BEFORE = 'r=()=>{s(),n.sandAccess.snapshots.get().state==="granted"&&e&&(e=!1,n.firstRun.forceOnboarding())}';
+const FIRST_BOX_REOPEN_AFTER = 'r=()=>{s(),n.sandAccess.snapshots.get().state==="granted"&&e&&(e=!1,n.firstRun.snapshots.get().phase!=="onboarding"&&n.firstRun.forceOnboarding())}';
 const COMPONENT_ANCHOR = 'function Sa(s){';
 const COMPONENT_SOURCE = String.raw`
 const RRouterProviders=[
@@ -57,7 +59,9 @@ export function patchOriginalSettingsPanel(source) {
 }
 
 export function patchOriginalOnboardingBootstrap(source) {
-  return replaceExactlyOnce(source, ONBOARDING_BOOT_GATE_BEFORE, ONBOARDING_BOOT_GATE_AFTER, "onboarding reconnect step preservation");
+  let patched = replaceExactlyOnce(source, ONBOARDING_BOOT_GATE_BEFORE, ONBOARDING_BOOT_GATE_AFTER, "onboarding reconnect step preservation");
+  patched = replaceExactlyOnce(patched, FIRST_BOX_REOPEN_BEFORE, FIRST_BOX_REOPEN_AFTER, "first-box onboarding reopen guard");
+  return patched;
 }
 
 export async function applyOriginalRendererRouterPatch({ stageRoot }) {
@@ -95,8 +99,8 @@ export async function applyOriginalRendererRouterPatch({ stageRoot }) {
     schemaVersion: 1,
     mode: "original-renderer-settings-extension",
     chunks: changes,
-    features: ["settings-router-provider", "settings-local-docker-vm", "usage-current-provider", "onboarding-reconnect-step-preservation"],
-    transformations: ["settings-registry", "router-panel", "usage-panel", "onboarding-reconnect-step-preservation"],
+    features: ["settings-router-provider", "settings-local-docker-vm", "usage-current-provider", "onboarding-reconnect-step-preservation", "first-box-onboarding-reopen-guard"],
+    transformations: ["settings-registry", "router-panel", "usage-panel", "onboarding-reconnect-step-preservation", "first-box-onboarding-reopen-guard"],
   };
   const provenancePath = path.join(stageRoot, "dist", "renderer-router-extension.json");
   await writeFile(provenancePath, `${JSON.stringify(record, null, 2)}\n`);
