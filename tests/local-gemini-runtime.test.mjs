@@ -62,6 +62,7 @@ test("local Gemini mode persists independently of a Cursor account", async () =>
   const settingsPath = path.join(directory, "settings.json");
   try {
     const settings = new SandSettingsStore(settingsPath);
+    assert.equal(settings.getBoxRuntime(), "local-docker");
     assert.equal(settings.getLocalGeminiEnabled(), false);
     settings.setLocalGeminiEnabled(true);
     settings.setInferenceProvider("gemini");

@@ -481,9 +481,9 @@ export function createProductionCoordinatorAdapter<
 
       const accountRuntime = createCoordinatorAccountRuntime<Status>({
         createRuntime,
-        getLocalRuntimeSlot: () => context.settings.settingsStore.getLocalGeminiEnabled() ? LOCAL_GEMINI_ACCOUNT_SLOT : null,
+        getLocalRuntimeSlot: () => context.settings.settingsStore.getBoxRuntime() === "local-docker" ? LOCAL_GEMINI_ACCOUNT_SLOT : null,
         authorizeAccount: (slot, transition) => slot === LOCAL_GEMINI_ACCOUNT_SLOT
-          ? Promise.resolve(context.settings.settingsStore.getLocalGeminiEnabled())
+          ? Promise.resolve(context.settings.settingsStore.getBoxRuntime() === "local-docker")
           : ports.account.authorizeAccount(slot, transition, context),
         revokeRefusedAccount: () => ports.account.revokeRefusedAccount(context),
         prepareAccountTransition: (transition) => {

@@ -597,7 +597,7 @@ export function createElectronMainProductionComposition(bindings: ElectronMainPr
       const accountLifecycle: ProductionAccountLifecycle = {
         getAccountScope: () => {
           const store = requireValue(settings, "settings").settingsStore;
-          return store.getMcpCustomInstructionsAccountScope() ?? (store.getLocalGeminiEnabled() ? "local-gemini" : undefined);
+          return store.getMcpCustomInstructionsAccountScope() ?? (store.getBoxRuntime() === "local-docker" ? "local-docker" : undefined);
         },
         isSignedIn: () => cursorAuthSignedIn,
         isAccountDeparting: () => accountTransitionDeparting,

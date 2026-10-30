@@ -260,7 +260,7 @@ export function createSettingsRoutedHostConnector(
       const issued = remote.issueInferenceCredential == null ? undefined : await Promise.race([
         remote.issueInferenceCredential(),
         new Promise<undefined>((resolve) => setTimeout(resolve, OPTIONAL_CREDENTIAL_TIMEOUT_MS)),
-      ]);
+      ]).catch(() => undefined);
       return await ensureLocalDockerBox(settings.settingsPath, issued);
     })().finally(() => { ensureInFlight = undefined; });
     return ensureInFlight;
