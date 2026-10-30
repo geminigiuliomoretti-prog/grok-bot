@@ -30,6 +30,7 @@ test("packaged preload exposes the local Gemini methods used during onboarding",
   assert.match(patched, /getLocalGeminiStatus: \{ args: "none" \}/);
   assert.match(patched, /configureLocalGemini: \{ args: "object" \}/);
   assert.match(patched, /getLocalGeminiStatus: \(\) => edge\("getLocalGeminiStatus"\)/);
-  assert.match(patched, /configureLocalGemini: \(apiKey\) => edge\("configureLocalGemini", \{ apiKey \}\)/);
+  assert.match(patched, /configureLocalGemini: \(args\) => edge\("configureLocalGemini", args\)/);
+  assert.equal(patchOriginalPreloadRpc(patched), patched);
   assert.throws(() => patchOriginalPreloadRpc("changed upstream preload"), /anchor is missing or ambiguous/);
 });

@@ -129,6 +129,14 @@ export const MAIN_METHOD_TABLE = {
 
 export type MainMethod = keyof typeof MAIN_METHOD_TABLE;
 
+export interface KnownMainRpcArguments {
+  configureLocalGemini: { apiKey: string };
+}
+
+export type MainMethodArguments<Method extends MainMethod> = Method extends keyof KnownMainRpcArguments
+  ? KnownMainRpcArguments[Method]
+  : (typeof MAIN_METHOD_TABLE)[Method]["args"] extends "none" ? undefined : Record<string, unknown>;
+
 export function isMainMethod(name: string): name is MainMethod {
   return Object.hasOwn(MAIN_METHOD_TABLE, name);
 }
