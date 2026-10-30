@@ -12,6 +12,14 @@ const ONBOARDING_BOOT_GATE_BEFORE = 'return t.status!=="ready"?{step:n4e,dailyTo
 const ONBOARDING_BOOT_GATE_AFTER = 'return{step:kMt(e.step,s),dailyTools:e.dailyTools,draft:e.draft}}';
 const FIRST_BOX_REOPEN_BEFORE = 'r=()=>{s(),n.sandAccess.snapshots.get().state==="granted"&&e&&(e=!1,n.firstRun.forceOnboarding())}';
 const FIRST_BOX_REOPEN_AFTER = 'r=()=>{s(),n.sandAccess.snapshots.get().state==="granted"&&e&&(e=!1,n.firstRun.snapshots.get().phase!=="onboarding"&&n.firstRun.forceOnboarding())}';
+const LOCAL_GATE_BEFORE = 'isSignedIn:()=>n.desktop.getCursorAuthStatus().then(v=>{const b=v.kind==="logged-in";return f=b,b})';
+const LOCAL_GATE_AFTER = 'isSignedIn:()=>Promise.all([n.desktop.getCursorAuthStatus(),n.desktop.getLocalGeminiStatus()]).then(([v,b])=>{const y=v.kind==="logged-in"||b.ready===!0;return f=y,y})';
+const LOCAL_SIGNOUT_BEFORE = 'noteSignedOut:d=>u({kind:"signed-out",accountSlot:d})';
+const LOCAL_SIGNOUT_AFTER = 'noteSignedOut:d=>{n.desktop.getLocalGeminiStatus().then(m=>{m.ready!==!0&&u({kind:"signed-out",accountSlot:d})}).catch(()=>u({kind:"signed-out",accountSlot:d}))}';
+const LOCAL_SETUP_VIEW_ANCHOR = 'l=p.jsx(h0t,{headingId:t,opticalDropPx:cjn,tagline:"Your team of always-on agents that you can give real work to.",children:o}),e[4]=t,e[5]=o,e[6]=l):l=e[6]';
+const LOCAL_SETUP_VIEW_AFTER = 'l=p.jsx(h0t,{headingId:t,opticalDropPx:cjn,tagline:"Your team of always-on agents that you can give real work to.",children:p.jsxs("div",{children:[o,p.jsx(RLocalGeminiSetup,{})]})}),e[4]=t,e[5]=o,e[6]=l):l=e[6]';
+const LOCAL_SETUP_COMPONENT_ANCHOR = 'function gjn(n){';
+const LOCAL_SETUP_COMPONENT = String.raw`function RLocalGeminiSetup(){const[s,e]=S.useState(""),[t,r]=S.useState(null),[i,o]=S.useState(!1),[l,c]=S.useState(null);S.useEffect(()=>{let u=!0;window.desktop.agent.getLocalGeminiStatus().then(d=>{u&&r(d)}).catch(()=>{});return()=>{u=!1}},[]);const a=async()=>{o(!0),c(null);try{const u=await window.desktop.agent.configureLocalGemini({apiKey:s});r(u);if(u.ready){window.location.reload();return}c(u.detail??u.docker?.detail??"The local computer is not ready yet.")}catch(u){c(String(u?.message??u))}finally{o(!1)}};return p.jsxs("section",{className:"sand-onboarding__landing-local",style:{borderTop:"1px solid rgba(128,128,128,.22)",marginTop:24,paddingTop:20,textAlign:"left",width:"min(420px, 100%)"},children:[p.jsx("h2",{style:{fontSize:16,fontWeight:600,margin:"0 0 6px"},children:"Use your Google Gemini API"}),p.jsx("p",{style:{fontSize:13,lineHeight:1.5,margin:"0 0 12px",opacity:.78},children:"Connect your own API key and run Grok Bot with a local Docker computer. No Cursor sign-in is needed."}),p.jsx("input",{type:"password","aria-label":"Google Gemini API key",autoComplete:"off",placeholder:t?.configured?"API key saved — leave blank to retry":"Paste your Google Gemini API key",value:s,onChange:u=>e(u.currentTarget.value),disabled:i,style:{boxSizing:"border-box",height:38,padding:"0 10px",width:"100%"}}),p.jsx("button",{type:"button",disabled:i,onClick:a,style:{cursor:i?"wait":"pointer",marginTop:10,minHeight:36,padding:"0 14px"},children:i?"Setting up local computer…":"Continue with Gemini"}),l?p.jsx("p",{role:"alert","aria-live":"polite",style:{color:"#c33",fontSize:12,lineHeight:1.45,margin:"10px 0 0"},children:l}):null,t?.ready?p.jsx("p",{role:"status",style:{fontSize:12,margin:"10px 0 0"},children:"Gemini and the local computer are ready."}):null]})}`;
 const COMPONENT_ANCHOR = 'function Sa(s){';
 const COMPONENT_SOURCE = String.raw`
 const RRouterProviders=[
@@ -61,6 +69,10 @@ export function patchOriginalSettingsPanel(source) {
 export function patchOriginalOnboardingBootstrap(source) {
   let patched = replaceExactlyOnce(source, ONBOARDING_BOOT_GATE_BEFORE, ONBOARDING_BOOT_GATE_AFTER, "onboarding reconnect step preservation");
   patched = replaceExactlyOnce(patched, FIRST_BOX_REOPEN_BEFORE, FIRST_BOX_REOPEN_AFTER, "first-box onboarding reopen guard");
+  patched = replaceExactlyOnce(patched, LOCAL_GATE_BEFORE, LOCAL_GATE_AFTER, "local Gemini first-run access");
+  patched = replaceExactlyOnce(patched, LOCAL_SIGNOUT_BEFORE, LOCAL_SIGNOUT_AFTER, "local Gemini signed-out transition guard");
+  patched = replaceExactlyOnce(patched, LOCAL_SETUP_COMPONENT_ANCHOR, `${LOCAL_SETUP_COMPONENT}${LOCAL_SETUP_COMPONENT_ANCHOR}`, "local Gemini sign-in setup component");
+  patched = replaceExactlyOnce(patched, LOCAL_SETUP_VIEW_ANCHOR, LOCAL_SETUP_VIEW_AFTER, "local Gemini sign-in setup view");
   return patched;
 }
 
@@ -99,8 +111,8 @@ export async function applyOriginalRendererRouterPatch({ stageRoot }) {
     schemaVersion: 1,
     mode: "original-renderer-settings-extension",
     chunks: changes,
-    features: ["settings-router-provider", "settings-local-docker-vm", "usage-current-provider", "onboarding-reconnect-step-preservation", "first-box-onboarding-reopen-guard"],
-    transformations: ["settings-registry", "router-panel", "usage-panel", "onboarding-reconnect-step-preservation", "first-box-onboarding-reopen-guard"],
+    features: ["settings-router-provider", "settings-local-docker-vm", "usage-current-provider", "onboarding-reconnect-step-preservation", "first-box-onboarding-reopen-guard", "local-gemini-sign-in-path"],
+    transformations: ["settings-registry", "router-panel", "usage-panel", "onboarding-reconnect-step-preservation", "first-box-onboarding-reopen-guard", "local-gemini-first-run-access", "local-gemini-setup-view"],
   };
   const provenancePath = path.join(stageRoot, "dist", "renderer-router-extension.json");
   await writeFile(provenancePath, `${JSON.stringify(record, null, 2)}\n`);

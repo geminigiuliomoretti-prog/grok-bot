@@ -11,7 +11,7 @@ if (process.platform !== "win32") {
   throw new Error("scripts/package-windows.mjs can only be run on Windows.");
 }
 
-const packageOutputWinDir = path.join(outputDir, "win-unpacked-access-fix-20261030");
+const packageOutputWinDir = path.join(outputDir, "win-unpacked-gemini-local-20261030");
 
 console.log("Building Fidelity Reconstructed ASAR with original renderer for Windows...");
 const { builtAsar, builtAsarUnpacked } = await buildFidelityReconstructedAsar();

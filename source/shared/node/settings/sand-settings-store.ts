@@ -28,6 +28,7 @@ export interface SandStoredSettings {
   localToolPermission?: SandLocalToolPermission; localToolPermissionCeiling?: SandLocalToolPermission;
   inferenceProvider?: SandInferenceProvider; inferenceRouterUsage?: SandInferenceRouterUsage;
   boxRuntime?: SandBoxRuntime;
+  localGeminiEnabled?: boolean;
   mcpCustomInstructionsAccountScope?: string; pinnedAgentIds?: string[]; sidebarSections?: SidebarSection[];
 }
 
@@ -71,6 +72,7 @@ function parseSettings(value: unknown): SandStoredSettings | null {
   if (isSandLocalToolPermission(raw.localToolPermissionCeiling)) result.localToolPermissionCeiling = raw.localToolPermissionCeiling;
   if (isSandInferenceProvider(raw.inferenceProvider)) result.inferenceProvider = raw.inferenceProvider;
   if (isSandBoxRuntime(raw.boxRuntime)) result.boxRuntime = raw.boxRuntime;
+  if (typeof raw.localGeminiEnabled === "boolean") result.localGeminiEnabled = raw.localGeminiEnabled;
   if (typeof raw.inferenceRouterUsage === "object" && raw.inferenceRouterUsage != null && !Array.isArray(raw.inferenceRouterUsage)) {
     const usage = emptySandInferenceRouterUsage();
     const rawProviders = (raw.inferenceRouterUsage as { providers?: unknown }).providers;
@@ -114,6 +116,8 @@ export class SandSettingsStore {
   setThemePreference(value: SandThemePreference): void { this.update((s) => ({ ...s, themePreference: value })); }
   getBoxRuntime(): SandBoxRuntime { return this.load().boxRuntime ?? DEFAULT_SAND_BOX_RUNTIME; }
   setBoxRuntime(value: SandBoxRuntime): void { this.update((s) => ({ ...s, boxRuntime: value })); }
+  getLocalGeminiEnabled(): boolean { return this.load().localGeminiEnabled === true; }
+  setLocalGeminiEnabled(value: boolean): void { this.update((s) => ({ ...s, localGeminiEnabled: value })); }
   getEgressTunnelEnabled(): boolean { return this.load().egressTunnelEnabled; }
   setEgressTunnelEnabled(value: boolean): void { this.update((s) => ({ ...s, egressTunnelEnabled: value })); }
   getWebauthnProxyEnabled(): boolean { return this.load().webauthnProxyEnabled; }

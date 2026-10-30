@@ -20,6 +20,7 @@ export interface CoordinatorRefusedAccountResult<Status extends CoordinatorAuthS
 
 export interface CoordinatorAccountRuntimeDependencies<Status extends CoordinatorAuthStatus> {
   readonly createRuntime: () => CoordinatorRuntime;
+  readonly getLocalRuntimeSlot?: () => string | null;
   readonly authorizeAccount: (
     slot: string,
     context: CoordinatorAccountTransition,
@@ -99,6 +100,8 @@ function cursorAccountSlot(status: CoordinatorAuthStatus): string | null {
   return slot == null || slot.length === 0 ? null : slot;
 }
 
+export const LOCAL_GEMINI_ACCOUNT_SLOT = "local-gemini";
+
 /**
  * Owns the one coordinator process allowed for the currently settled account.
  * Observations are serialized and version-fenced so an older authorization or
@@ -123,6 +126,8 @@ export function createCoordinatorAccountRuntime<Status extends CoordinatorAuthSt
   });
 
   const isDisposed = (): boolean => state.kind === "disposed";
+  const effectiveSlot = (status: CoordinatorAuthStatus): string | null =>
+    cursorAccountSlot(status) ?? dependencies.getLocalRuntimeSlot?.() ?? null;
 
   const accountSlot = (): string | null | undefined => {
     switch (state.kind) {
@@ -269,7 +274,7 @@ export function createCoordinatorAccountRuntime<Status extends CoordinatorAuthSt
       if (state.kind !== "blocked") return;
       const blocked = state;
       const version = observedVersion;
-      const nextSlot = cursorAccountSlot(settledStatus);
+      const nextSlot = effectiveSlot(settledStatus);
       if (nextSlot === null || nextSlot !== blocked.slot) {
         state = { kind: "inactive" };
         return;
@@ -368,7 +373,7 @@ export function createCoordinatorAccountRuntime<Status extends CoordinatorAuthSt
       if (state.kind !== "unstarted") return;
       startWork = (async () => {
         try {
-          await applyClaim(cursorAccountSlot(status), status, true, 0, (settled) => {
+          await applyClaim(effectiveSlot(status), status, true, 0, (settled) => {
             settledStatus = settled;
           });
         } finally {
@@ -380,7 +385,7 @@ export function createCoordinatorAccountRuntime<Status extends CoordinatorAuthSt
     observe(status) {
       if (isDisposed()) return;
       const version = ++observedVersion;
-      const nextSlot = cursorAccountSlot(status);
+      const nextSlot = effectiveSlot(status);
       if (nextSlot !== accountSlot()) revokeActiveRendererPortRequest();
       chain = chain.then(async () => {
         await startArrived;
@@ -397,9 +402,14 @@ export function createCoordinatorAccountRuntime<Status extends CoordinatorAuthSt
       }
     },
     restart() {
-      return state.kind === "active" && state.appliedVersion === observedVersion
-        ? state.session.restart()
-        : Promise.resolve();
+      if (state.kind === "active" && state.appliedVersion === observedVersion) return state.session.restart();
+      if (state.kind === "disposed" || state.kind === "unstarted") return Promise.resolve();
+      const version = ++observedVersion;
+      const status = settledStatus;
+      chain = chain.then(async () => {
+        await applyClaim(effectiveSlot(status), status, false, version, settleObservedStatus);
+      });
+      return chain;
     },
     dispose() {
       if (isDisposed()) return Promise.resolve();

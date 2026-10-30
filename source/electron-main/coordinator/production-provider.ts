@@ -7,6 +7,7 @@ import type {
 } from "../main-production-services.js";
 import {
   createCoordinatorAccountRuntime,
+  LOCAL_GEMINI_ACCOUNT_SLOT,
   type CoordinatorAccountTransition,
   type CoordinatorAuthStatus,
   type CoordinatorRefusedAccountResult,
@@ -480,8 +481,10 @@ export function createProductionCoordinatorAdapter<
 
       const accountRuntime = createCoordinatorAccountRuntime<Status>({
         createRuntime,
-        authorizeAccount: (slot, transition) =>
-          ports.account.authorizeAccount(slot, transition, context),
+        getLocalRuntimeSlot: () => context.settings.settingsStore.getLocalGeminiEnabled() ? LOCAL_GEMINI_ACCOUNT_SLOT : null,
+        authorizeAccount: (slot, transition) => slot === LOCAL_GEMINI_ACCOUNT_SLOT
+          ? Promise.resolve(context.settings.settingsStore.getLocalGeminiEnabled())
+          : ports.account.authorizeAccount(slot, transition, context),
         revokeRefusedAccount: () => ports.account.revokeRefusedAccount(context),
         prepareAccountTransition: (transition) => {
           context.accountLifecycle.beginTransition();

@@ -595,7 +595,10 @@ export function createElectronMainProductionComposition(bindings: ElectronMainPr
       }));
       const handleBoxVisibilityReport = createBoxVisibilityReportHandler(() => boxVisibilityTracker);
       const accountLifecycle: ProductionAccountLifecycle = {
-        getAccountScope: () => requireValue(settings, "settings").settingsStore.getMcpCustomInstructionsAccountScope(),
+        getAccountScope: () => {
+          const store = requireValue(settings, "settings").settingsStore;
+          return store.getMcpCustomInstructionsAccountScope() ?? (store.getLocalGeminiEnabled() ? "local-gemini" : undefined);
+        },
         isSignedIn: () => cursorAuthSignedIn,
         isAccountDeparting: () => accountTransitionDeparting,
         beginTransition: () => { accountTransitionDeparting = true; connectorEgress.noteAccountDeparted(); },
@@ -708,6 +711,7 @@ export function createElectronMainProductionComposition(bindings: ElectronMainPr
         onCoordinatorLaunched: () => {
           requireValue(clientPauseControl, "client-pause").reapplyAfterCoordinatorLaunch();
           void devGatewayOfflineControl.reapplyAfterCoordinatorLaunch();
+          if (requireValue(settings, "settings").settingsStore.getLocalGeminiEnabled()) void secretsStores?.pushBoxSecrets.push("local-gemini-coordinator-launch");
         },
         coordinatorLegs, connectorEgress,
         requireEgressTunnelController: () => requireValue(egressTunnelController, "egress-tunnel"),
