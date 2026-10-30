@@ -3,31 +3,30 @@ import path from "node:path";
 import {
   cachedRuntimeWin,
   outputDir,
-  outputWinDir,
 } from "./lib/config.mjs";
-import { buildFidelityReconstructedAsar } from "./clean-build.mjs";
+import { buildReconstructedAsar } from "./clean-build.mjs";
 import { resolveRuntimeApp } from "./lib/runtime.mjs";
 
 if (process.platform !== "win32") {
   throw new Error("scripts/package-windows.mjs can only be run on Windows.");
 }
 
-console.log("Building Fidelity Reconstructed ASAR for Windows...");
-const { builtAsar, builtAsarUnpacked } = await buildFidelityReconstructedAsar();
+const packageOutputWinDir = path.join(outputDir, "win-unpacked-source");
+
+console.log("Building source-aware Reconstructed ASAR for Windows...");
+const { builtAsar, builtAsarUnpacked } = await buildReconstructedAsar();
 const runtimeDir = await resolveRuntimeApp();
 
-console.log(`Packaging Windows app into ${outputWinDir}...`);
+console.log(`Packaging Windows app into ${packageOutputWinDir}...`);
 await mkdir(outputDir, { recursive: true });
-try {
-  await rm(outputWinDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-} catch {}
-await cp(runtimeDir, outputWinDir, {
+await rm(packageOutputWinDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+await cp(runtimeDir, packageOutputWinDir, {
   recursive: true,
   dereference: false,
   preserveTimestamps: true,
 });
 
-const resources = path.join(outputWinDir, "resources");
+const resources = path.join(packageOutputWinDir, "resources");
 const packagedAsar = path.join(resources, "app.asar");
 const packagedUnpacked = `${packagedAsar}.unpacked`;
 
@@ -41,4 +40,4 @@ await cp(builtAsarUnpacked, packagedUnpacked, {
   preserveTimestamps: true,
 });
 
-console.log(`Windows packaged distribution successfully created at:\n${path.join(outputWinDir, "Grok Bot.exe")}`);
+console.log(`Windows packaged distribution successfully created at:\n${path.join(packageOutputWinDir, "Grok Bot.exe")}`);
