@@ -4,17 +4,17 @@ import {
   cachedRuntimeWin,
   outputDir,
 } from "./lib/config.mjs";
-import { buildReconstructedAsar } from "./clean-build.mjs";
+import { buildFidelityReconstructedAsar } from "./clean-build.mjs";
 import { resolveRuntimeApp } from "./lib/runtime.mjs";
 
 if (process.platform !== "win32") {
   throw new Error("scripts/package-windows.mjs can only be run on Windows.");
 }
 
-const packageOutputWinDir = path.join(outputDir, "win-unpacked-source");
+const packageOutputWinDir = path.join(outputDir, "win-unpacked-onboarding-fix");
 
-console.log("Building source-aware Reconstructed ASAR for Windows...");
-const { builtAsar, builtAsarUnpacked } = await buildReconstructedAsar();
+console.log("Building Fidelity Reconstructed ASAR with original renderer for Windows...");
+const { builtAsar, builtAsarUnpacked } = await buildFidelityReconstructedAsar();
 const runtimeDir = await resolveRuntimeApp();
 
 console.log(`Packaging Windows app into ${packageOutputWinDir}...`);

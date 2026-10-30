@@ -8,6 +8,8 @@ const GENERAL_BEFORE = 'Q=x==="general"?a.jsx(Te,{children:a.jsx(Sa,{auth:t})}):
 const GENERAL_AFTER = 'Q=x==="general"?a.jsx(Te,{children:a.jsx(Sa,{auth:t})}):x==="router"?a.jsx(RRouterPanel,{}):null';
 const USAGE_BEFORE = 'Z=x==="usage"?a.jsx(Te,{children:a.jsx(Na,{})}):null';
 const USAGE_AFTER = 'Z=x==="usage"?a.jsx(Te,{children:a.jsx(RRouterUsage,{})}):null';
+const ONBOARDING_BOOT_GATE_BEFORE = 'return t.status!=="ready"?{step:n4e,dailyTools:[],draft:Ptt}:{step:kMt(e.step,s),dailyTools:e.dailyTools,draft:e.draft}}';
+const ONBOARDING_BOOT_GATE_AFTER = 'return{step:kMt(e.step,s),dailyTools:e.dailyTools,draft:e.draft}}';
 const COMPONENT_ANCHOR = 'function Sa(s){';
 const COMPONENT_SOURCE = String.raw`
 const RRouterProviders=[
@@ -54,24 +56,31 @@ export function patchOriginalSettingsPanel(source) {
   return patched;
 }
 
+export function patchOriginalOnboardingBootstrap(source) {
+  return replaceExactlyOnce(source, ONBOARDING_BOOT_GATE_BEFORE, ONBOARDING_BOOT_GATE_AFTER, "onboarding reconnect step preservation");
+}
+
 export async function applyOriginalRendererRouterPatch({ stageRoot }) {
   const assetsRoot = path.join(stageRoot, "dist", "renderer", "assets");
   const registryCandidates = [];
   const panelCandidates = [];
+  const onboardingCandidates = [];
   for (const name of await readdir(assetsRoot)) {
     if (!name.endsWith(".js")) continue;
     const target = path.join(assetsRoot, name);
     const source = await readFile(target, "utf8");
     if (source.includes(REGISTRY_BEFORE)) registryCandidates.push({ name, target, source });
     if (source.includes(COMPONENT_ANCHOR) && source.includes(GENERAL_BEFORE) && source.includes(USAGE_BEFORE)) panelCandidates.push({ name, target, source });
+    if (source.includes(ONBOARDING_BOOT_GATE_BEFORE)) onboardingCandidates.push({ name, target, source });
   }
-  if (registryCandidates.length !== 1 || panelCandidates.length !== 1) {
-    throw new Error(`Expected one original Settings registry and panel chunk, found ${registryCandidates.length}/${panelCandidates.length}.`);
+  if (registryCandidates.length !== 1 || panelCandidates.length !== 1 || onboardingCandidates.length !== 1) {
+    throw new Error(`Expected one original Settings registry, panel and onboarding chunk, found ${registryCandidates.length}/${panelCandidates.length}/${onboardingCandidates.length}.`);
   }
   const changes = [];
   for (const [role, candidate, transform] of [
     ["registry", registryCandidates[0], patchOriginalSettingsRegistry],
     ["panel", panelCandidates[0], patchOriginalSettingsPanel],
+    ["onboarding", onboardingCandidates[0], patchOriginalOnboardingBootstrap],
   ]) {
     const patched = transform(candidate.source);
     await writeFile(candidate.target, patched);
@@ -86,8 +95,8 @@ export async function applyOriginalRendererRouterPatch({ stageRoot }) {
     schemaVersion: 1,
     mode: "original-renderer-settings-extension",
     chunks: changes,
-    features: ["settings-router-provider", "settings-local-docker-vm", "usage-current-provider"],
-    transformations: ["settings-registry", "router-panel", "usage-panel"],
+    features: ["settings-router-provider", "settings-local-docker-vm", "usage-current-provider", "onboarding-reconnect-step-preservation"],
+    transformations: ["settings-registry", "router-panel", "usage-panel", "onboarding-reconnect-step-preservation"],
   };
   const provenancePath = path.join(stageRoot, "dist", "renderer-router-extension.json");
   await writeFile(provenancePath, `${JSON.stringify(record, null, 2)}\n`);
