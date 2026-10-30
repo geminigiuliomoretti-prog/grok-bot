@@ -25,8 +25,11 @@ test("renderer patch fails closed if the upstream onboarding behavior changes", 
 });
 
 test("packaged preload exposes the local Gemini methods used during onboarding", () => {
-  const patched = patchOriginalPreloadRpc('const MAIN_METHOD_TABLE = {\n  getCursorAuthStatus: { args: "none" },\n};');
+  const original = 'const MAIN_METHOD_TABLE = {\n  getCursorAuthStatus: { args: "none" },\n};\nconst desktop = {\n  agent: {\n      setBoxRuntime: (mode) => edge("setBoxRuntime", { mode }),\n      clientPersistence: {\n    }\n  }\n};';
+  const patched = patchOriginalPreloadRpc(original);
   assert.match(patched, /getLocalGeminiStatus: \{ args: "none" \}/);
   assert.match(patched, /configureLocalGemini: \{ args: "object" \}/);
+  assert.match(patched, /getLocalGeminiStatus: \(\) => edge\("getLocalGeminiStatus"\)/);
+  assert.match(patched, /configureLocalGemini: \(apiKey\) => edge\("configureLocalGemini", \{ apiKey \}\)/);
   assert.throws(() => patchOriginalPreloadRpc("changed upstream preload"), /anchor is missing or ambiguous/);
 });
