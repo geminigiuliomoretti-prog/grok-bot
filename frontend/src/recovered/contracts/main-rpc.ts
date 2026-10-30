@@ -17,7 +17,8 @@ export const MAIN_METHOD_TABLE = {
   forceReconnectGateway: "none", getExperimentsSnapshot: "none", applyFeatureFlagOverride: "object", refreshFeatureFlags: "none",
   startRpcTraceWindow: "none", getAgentDefaultModel: "none", setAgentDefaultModel: "object", getComputerUseModel: "none",
   setComputerUseModel: "object", getHostPinnedAgents: "none", setHostPinnedAgents: "object", getHostSidebarSections: "none",
-  setHostSidebarSections: "object", getAvailableModels: "none", transcribeAudio: "object", getCursorAuthStatus: "none",
+  setHostSidebarSections: "object", getAvailableModels: "none", transcribeAudio: "object", getLocalGeminiStatus: "none",
+  configureLocalGemini: "object", getCursorAuthStatus: "none",
   loginCursor: "none", cancelCursorLogin: "none", logoutCursor: "none", updateCursorAccountName: "object",
   getCursorAvatar: "none", getCursorWeeklyUsage: "none", getCursorUsageSummary: "none", getCursorPrReviewPreferences: "none",
   getCursorPrivacyModeEnabled: "none", getSandAccess: "none", getSandAccessFresh: "none", invokeCursorDashboardAction: "object",
@@ -58,6 +59,7 @@ export interface KnownMainRpcArguments {
   getLinkMetadata: { url: string };
   generateAgentAvatarImage: { description: string };
   transcribeAudio: { audio: Uint8Array; mimeType: string; language?: string };
+  configureLocalGemini: { apiKey: string };
   updateCursorAccountName: { name: string };
   setThemePreference: { preference: "system" | "light" | "dark" };
   setEgressTunnelEnabled: { enabled: boolean };

@@ -20,6 +20,8 @@ const LOCAL_SETUP_VIEW_ANCHOR = 'l=p.jsx(h0t,{headingId:t,opticalDropPx:cjn,tagl
 const LOCAL_SETUP_VIEW_AFTER = 'l=p.jsx(h0t,{headingId:t,opticalDropPx:cjn,tagline:"Your team of always-on agents that you can give real work to.",children:p.jsxs("div",{children:[o,p.jsx(RLocalGeminiSetup,{})]})}),e[4]=t,e[5]=o,e[6]=l):l=e[6]';
 const LOCAL_SETUP_COMPONENT_ANCHOR = 'function gjn(n){';
 const LOCAL_SETUP_COMPONENT = String.raw`function RLocalGeminiSetup(){const[s,e]=S.useState(""),[t,r]=S.useState(null),[i,o]=S.useState(!1),[l,c]=S.useState(null);S.useEffect(()=>{let u=!0;window.desktop.agent.getLocalGeminiStatus().then(d=>{u&&r(d)}).catch(()=>{});return()=>{u=!1}},[]);const a=async()=>{o(!0),c(null);try{const u=await window.desktop.agent.configureLocalGemini({apiKey:s});r(u);if(u.ready){window.location.reload();return}c(u.detail??u.docker?.detail??"The local computer is not ready yet.")}catch(u){c(String(u?.message??u))}finally{o(!1)}};return p.jsxs("section",{className:"sand-onboarding__landing-local",style:{borderTop:"1px solid rgba(128,128,128,.22)",marginTop:24,paddingTop:20,textAlign:"left",width:"min(420px, 100%)"},children:[p.jsx("h2",{style:{fontSize:16,fontWeight:600,margin:"0 0 6px"},children:"Use your Google Gemini API"}),p.jsx("p",{style:{fontSize:13,lineHeight:1.5,margin:"0 0 12px",opacity:.78},children:"Connect your own API key and run Grok Bot with a local Docker computer. No Cursor sign-in is needed."}),p.jsx("input",{type:"password","aria-label":"Google Gemini API key",autoComplete:"off",placeholder:t?.configured?"API key saved — leave blank to retry":"Paste your Google Gemini API key",value:s,onChange:u=>e(u.currentTarget.value),disabled:i,style:{boxSizing:"border-box",height:38,padding:"0 10px",width:"100%"}}),p.jsx("button",{type:"button",disabled:i,onClick:a,style:{cursor:i?"wait":"pointer",marginTop:10,minHeight:36,padding:"0 14px"},children:i?"Setting up local computer…":"Continue with Gemini"}),l?p.jsx("p",{role:"alert","aria-live":"polite",style:{color:"#c33",fontSize:12,lineHeight:1.45,margin:"10px 0 0"},children:l}):null,t?.ready?p.jsx("p",{role:"status",style:{fontSize:12,margin:"10px 0 0"},children:"Gemini and the local computer are ready."}):null]})}`;
+const PRELOAD_RPC_ANCHOR = '  getCursorAuthStatus: { args: "none" },';
+const PRELOAD_RPC_AFTER = '  getLocalGeminiStatus: { args: "none" },\n  configureLocalGemini: { args: "object" },\n' + PRELOAD_RPC_ANCHOR;
 const COMPONENT_ANCHOR = 'function Sa(s){';
 const COMPONENT_SOURCE = String.raw`
 const RRouterProviders=[
@@ -76,8 +78,13 @@ export function patchOriginalOnboardingBootstrap(source) {
   return patched;
 }
 
+export function patchOriginalPreloadRpc(source) {
+  return replaceExactlyOnce(source, PRELOAD_RPC_ANCHOR, PRELOAD_RPC_AFTER, "local Gemini preload RPC contract");
+}
+
 export async function applyOriginalRendererRouterPatch({ stageRoot }) {
   const assetsRoot = path.join(stageRoot, "dist", "renderer", "assets");
+  const preloadPath = path.join(stageRoot, "dist", "electron-preload", "preload.cjs");
   const registryCandidates = [];
   const panelCandidates = [];
   const onboardingCandidates = [];
@@ -93,6 +100,15 @@ export async function applyOriginalRendererRouterPatch({ stageRoot }) {
     throw new Error(`Expected one original Settings registry, panel and onboarding chunk, found ${registryCandidates.length}/${panelCandidates.length}/${onboardingCandidates.length}.`);
   }
   const changes = [];
+  const preloadSource = await readFile(preloadPath, "utf8");
+  const patchedPreload = patchOriginalPreloadRpc(preloadSource);
+  await writeFile(preloadPath, patchedPreload);
+  changes.push({
+    role: "preload-rpc",
+    path: "dist/electron-preload/preload.cjs",
+    original: { bytes: Buffer.byteLength(preloadSource), sha256: sha256(preloadSource) },
+    patched: { bytes: Buffer.byteLength(patchedPreload), sha256: sha256(patchedPreload) },
+  });
   for (const [role, candidate, transform] of [
     ["registry", registryCandidates[0], patchOriginalSettingsRegistry],
     ["panel", panelCandidates[0], patchOriginalSettingsPanel],
@@ -111,8 +127,8 @@ export async function applyOriginalRendererRouterPatch({ stageRoot }) {
     schemaVersion: 1,
     mode: "original-renderer-settings-extension",
     chunks: changes,
-    features: ["settings-router-provider", "settings-local-docker-vm", "usage-current-provider", "onboarding-reconnect-step-preservation", "first-box-onboarding-reopen-guard", "local-gemini-sign-in-path"],
-    transformations: ["settings-registry", "router-panel", "usage-panel", "onboarding-reconnect-step-preservation", "first-box-onboarding-reopen-guard", "local-gemini-first-run-access", "local-gemini-setup-view"],
+    features: ["settings-router-provider", "settings-local-docker-vm", "usage-current-provider", "onboarding-reconnect-step-preservation", "first-box-onboarding-reopen-guard", "local-gemini-sign-in-path", "local-gemini-preload-rpc"],
+    transformations: ["settings-registry", "router-panel", "usage-panel", "onboarding-reconnect-step-preservation", "first-box-onboarding-reopen-guard", "local-gemini-preload-rpc", "local-gemini-first-run-access", "local-gemini-setup-view"],
   };
   const provenancePath = path.join(stageRoot, "dist", "renderer-router-extension.json");
   await writeFile(provenancePath, `${JSON.stringify(record, null, 2)}\n`);
