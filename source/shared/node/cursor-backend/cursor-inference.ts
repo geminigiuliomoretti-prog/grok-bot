@@ -157,7 +157,36 @@ export function createSandInferenceInterceptor(options: SandInferenceOptions): I
 
 export function createSandBackendTransport(options: Omit<SandInferenceOptions, "backendUrl">): Transport {
   const backendUrl = getSandInferenceBackendUrl();
-  return createConnectTransport({ baseUrl: backendUrl, httpVersion: "1.1", interceptors: [createSandRpcTracingInterceptor(), createSandInferenceInterceptor({ ...options, backendUrl })] });
+  const isBlocked = backendUrl.includes("cursor.sh") || backendUrl.includes("cursorapi.com");
+  const offlineRpcInterceptor: Interceptor = (next) => async (req) => {
+    if (isBlocked) {
+      if (!req.stream) {
+        return {
+          stream: false,
+          service: req.service,
+          method: req.method,
+          header: new Headers(),
+          trailer: new Headers(),
+          message: new (req.method.O as any)(),
+        };
+      } else {
+        return {
+          stream: true,
+          service: req.service,
+          method: req.method,
+          header: new Headers(),
+          trailer: new Headers(),
+          message: (async function* () {})(),
+        };
+      }
+    }
+    return await next(req);
+  };
+  return createConnectTransport({
+    baseUrl: backendUrl,
+    httpVersion: "1.1",
+    interceptors: [offlineRpcInterceptor, createSandRpcTracingInterceptor(), createSandInferenceInterceptor({ ...options, backendUrl })]
+  });
 }
 export function createSandCursorBackendClient<Service extends ServiceType>(service: Service, options: Omit<SandInferenceOptions, "backendUrl">): Client<Service> { return createClient(service, createSandBackendTransport(options)); }
 
@@ -187,10 +216,11 @@ export function createSandAttachedMediaUrlProvider(options: Omit<SandInferenceOp
 export function createCursorInferencePromptSession(options: Omit<SandInferenceOptions, "backendUrl"> & {
   readonly requestedModel: RequestedModel;
   readonly inferenceReason?: InferenceReason;
+  readonly isSummarizationSession?: boolean;
 }) {
   const settingsPath = join(getSandRootDir(), "settings.json");
   const routedProvider = new SandSettingsStore(settingsPath).getInferenceProvider();
-  if (routedProvider !== "cursor") return createProviderPromptSession(routedProvider);
+  if (routedProvider !== "cursor") return createProviderPromptSession(routedProvider, { isSummarization: options.isSummarizationSession });
   const client = createSandCursorBackendClient(InferenceService, options);
   return createProtoSessionProvider(client, options.requestedModel, undefined, options.inferenceReason).getSession(imageResizingMiddleware);
 }

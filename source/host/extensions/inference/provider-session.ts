@@ -1,3 +1,4 @@
+import { executeGeminiNativeStream } from "./gemini-native-adapter.js";
 import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -89,7 +90,7 @@ function geminiCredential(): string {
 }
 
 function configuredGeminiModel(): string {
-  return process.env.SAND_GEMINI_MODEL?.trim() || "gemini-3.5-flash";
+  return process.env.SAND_GEMINI_MODEL?.trim() || "gemini-3.6-flash";
 }
 
 function openRouterCredential(): string {
@@ -294,39 +295,24 @@ function toToolSet(definitions: readonly Loose[] | undefined, executeTool?: Rout
   return Object.keys(tools).length === 0 ? undefined : tools;
 }
 
-function geminiExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void) {
-  const id = configuredGeminiModel();
-  const model: LanguageModelV1 = createOpenAI({ apiKey: geminiCredential(), baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/", compatibility: "compatible", name: "gemini" }).chat(id as any);
-  let didCallSendMessage = false;
-  const wrappedExecuteTool: RoutedToolExecutor | undefined = executeTool == null ? undefined : async (toolDef, args, toolCallId) => {
-    if (typeof toolDef.name === "string" && toolDef.name.toLowerCase() === "sendmessage") {
-      didCallSendMessage = true;
-    }
-    return await executeTool(toolDef, args, toolCallId);
-  };
-  const tools = toToolSet(definitions, wrappedExecuteTool);
-  const result = streamText({ model, system: GROK_ROUTER_SYSTEM_PROMPT, messages: messages as CoreMessage[], ...(tools === undefined ? {} : { tools }), toolCallStreaming: true, maxSteps: tools === undefined ? 1 : 8 });
-  const extendedUsage = result.usage.then(value => ({ inputTokens: value.promptTokens, outputTokens: value.completionTokens, cacheReadTokens: 0, cacheWriteTokens: 0, maxTokens: 0 }));
-  if (onUsage != null) void extendedUsage.then(onUsage);
-  const fullStream = (async function* () {
-    let text = "";
-    for await (const chunk of result.fullStream) {
-      if (chunk.type === "text-delta" && typeof (chunk as any).textDelta === "string") {
-        text += (chunk as any).textDelta;
-      }
-      yield chunk;
-    }
-    if (!didCallSendMessage && executeTool != null && text.trim().length > 0) {
-      const sendDef = definitions?.find(d => typeof d.name === "string" && d.name.toLowerCase() === "sendmessage");
-      if (sendDef != null) {
-        try {
-          await executeTool(sendDef, { type: "text", content: text.trim() }, `auto-${invocationId}`);
-          didCallSendMessage = true;
-        } catch {}
-      }
-    }
-  })();
-  return { fullStream, response: result.response, usage: result.usage, extendedUsage, providerMetadata: result.providerMetadata, invocationId: Promise.resolve(invocationId) };
+function geminiExecutor(
+  messages: readonly ProviderMessage[],
+  invocationId: string,
+  definitions?: readonly Loose[],
+  _executeTool?: RoutedToolExecutor,
+  onUsage?: (usage: UsageRecord) => void,
+  isSummarization?: boolean,
+) {
+  return executeGeminiNativeStream({
+    apiKey: geminiCredential(),
+    messages,
+    systemPrompt: GROK_ROUTER_SYSTEM_PROMPT,
+    definitions,
+    invocationId,
+    isSummarization,
+    preferredModel: configuredGeminiModel(),
+    onUsage,
+  });
 }
 
 function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void) {
@@ -340,24 +326,42 @@ function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: 
 }
 
 class ProviderPromptExecutor extends BasePromptExecutor<ProviderMessage> {
-  constructor(readonly provider: RoutedProvider, initialMessages?: readonly ProviderMessage[], readonly onUsage?: (usage: UsageRecord) => void) { super(new BasePromptBuilder(initialMessages)); }
+  constructor(
+    readonly provider: RoutedProvider,
+    initialMessages?: readonly ProviderMessage[],
+    readonly onUsage?: (usage: UsageRecord) => void,
+    readonly isSummarization?: boolean,
+  ) {
+    super(new BasePromptBuilder(initialMessages));
+  }
   stream(_ctx: unknown, invocationId = crypto.randomUUID(), definitions?: readonly Loose[], executeTool?: RoutedToolExecutor) {
     if (this.provider === "codex") return codexExecutor(this.getMessages(), invocationId, definitions, executeTool, this.onUsage);
     if (this.provider === "claude-code") return claudeExecutor(this.getMessages(), invocationId, this.onUsage);
-    if (this.provider === "gemini") return geminiExecutor(this.getMessages(), invocationId, definitions, executeTool, this.onUsage);
+    if (this.provider === "gemini") return geminiExecutor(this.getMessages(), invocationId, definitions, executeTool, this.onUsage, this.isSummarization);
     return openRouterExecutor(this.getMessages(), invocationId, definitions, executeTool, this.onUsage);
   }
 }
 
-export function createProviderPromptSession(provider: RoutedProvider): { getModelId(): string; getExecutor(state?: unknown): PromptExecutor } {
+export function createProviderPromptSession(
+  provider: RoutedProvider,
+  options?: { isSummarization?: boolean | undefined },
+): { getModelId(): string; getExecutor(state?: unknown): PromptExecutor } {
   const modelId = provider === "codex"
     ? configuredCodexModel()
     : provider === "claude-code"
       ? "claude-code"
       : provider === "gemini"
-        ? configuredGeminiModel()
+        ? (options?.isSummarization ? "gemini-3.5-flash-lite" : configuredGeminiModel())
         : process.env.SAND_OPENROUTER_MODEL?.trim() || "openai/gpt-5.2";
-  return { getModelId: () => modelId, getExecutor: state => new ProviderPromptExecutor(provider, Array.isArray(state) ? state as ProviderMessage[] : undefined, usage => recordRoutedUsage(provider, usage)) };
+  return {
+    getModelId: () => modelId,
+    getExecutor: state => new ProviderPromptExecutor(
+      provider,
+      Array.isArray(state) ? state as ProviderMessage[] : undefined,
+      usage => recordRoutedUsage(provider, usage),
+      options?.isSummarization,
+    )
+  };
 }
 
 export async function runRoutedProviderText(provider: RoutedProvider, messages: readonly ProviderMessage[], options?: {

@@ -1,3 +1,4 @@
+let currentRunningHostSha256: string | undefined;
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createWriteStream, statSync } from "node:fs";
@@ -198,6 +199,10 @@ async function ensureLocalNativeHost(settingsPath: string, inferenceCredential?:
   await freeStalePortIfDead(port);
 
   const hostBundle = await stageCurrentHostBundle(settingsPath);
+  if (currentRunningHostSha256 !== undefined && currentRunningHostSha256 !== hostBundle.sha256) {
+    await freeStalePortIfDead(port);
+  }
+  currentRunningHostSha256 = hostBundle.sha256;
   const depsDir = resolveDepsDir();
   const inferenceFile = inferenceCredential == null ? undefined : await persistInferenceCredential(settingsPath, inferenceCredential);
   const rootDir = dirname(settingsPath);

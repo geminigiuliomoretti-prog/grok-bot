@@ -1,3 +1,5 @@
+import { installNetworkOfflineGuard } from "../shared/node/network-offline-guard.js";
+installNetworkOfflineGuard();
 import { installInvariantReporter } from "../shared/invariant.js";
 import { gatewayScheme, resolveGatewayServerConfig } from "./gateway-config.js";
 import { startGatewayServer } from "./gateway-server.js";

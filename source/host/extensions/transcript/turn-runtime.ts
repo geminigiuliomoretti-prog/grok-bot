@@ -550,6 +550,26 @@ export class TurnRuntime {
     let attempts = 0;
     let delivered = !isDeliveryOwed(result);
     let streamOutputProduced = result.streamOutputProduced === true;
+
+    if (
+      !delivered &&
+      typeof (latest as any).text === "string" &&
+      (latest as any).text.trim().length > 0 &&
+      epoch === this.tm.sendPipeline.currentTurnEpoch(session)
+    ) {
+      const content = (latest as any).text.trim();
+      this.handleAgentUpdate(
+        {
+          type: "send-message",
+          message: { type: "text", content },
+          timestampMs: Date.now(),
+        },
+        session,
+      );
+      latest = { ...latest, sentMessageCount: 1 };
+      delivered = true;
+    }
+
     while (
       isDeliveryOwed(latest) &&
       attempts < MAX_REPLY_NUDGES &&

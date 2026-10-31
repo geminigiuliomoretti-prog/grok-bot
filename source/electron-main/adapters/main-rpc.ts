@@ -84,7 +84,7 @@ export function createElectronProductionMainRpcBinding(
             try {
               const rootDir = dirname(settingsPath);
               const boxSecretsFile = join(rootDir, "box-secrets.json");
-              let currentSecrets = {};
+              let currentSecrets: Record<string, string> = {};
               try {
                 const parsed = JSON.parse(await readFile(boxSecretsFile, "utf8"));
                 if (parsed && typeof parsed.secrets === "object" && parsed.secrets != null) currentSecrets = parsed.secrets;

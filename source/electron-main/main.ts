@@ -1,3 +1,5 @@
+import { installNetworkOfflineGuard } from "../shared/node/network-offline-guard.js";
+installNetworkOfflineGuard();
 import { installApplicationMenu, type ApplicationMenuElectronPort } from "./application-menu.js";
 import { reportDesktopEdgeFailure } from "./desktop-edge-failures.js";
 import { createDevToolsGate, createDevToolsMembershipResolver } from "./devtools-gate.js";
@@ -408,6 +410,13 @@ export function startElectronMain(deps: ElectronMainDependencies): ElectronMainR
       devToolsGate.subscribe(installMenu);
 
       deps.startup.markPhase("window");
+      try {
+        const { session } = await import("electron");
+        session.defaultSession.webRequest.onBeforeRequest(
+          { urls: ["*://*.cursor.sh/*", "*://*.cursorapi.com/*", "*://*.cursor-cdn.com/*"] },
+          (details, callback) => callback({ cancel: true })
+        );
+      } catch {}
       isMainWindowCreationReady = true;
       await createWindow();
       deps.startup.noteReady();

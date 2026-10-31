@@ -91,7 +91,7 @@ export class SandDesktopStructuredLogTelemetry {
   private readonly now: () => number;
 
   static async create(options: DesktopStructuredLogTelemetryOptions): Promise<SandDesktopStructuredLogTelemetry> {
-    const disabled = options.disabled ?? process.env.SAND_DISABLE_TELEMETRY === "1";
+    const disabled = options.disabled ?? (process.env.SAND_DISABLE_TELEMETRY !== "0" || !options.accountSlot || options.accountSlot === "local-user");
     if (disabled) { await options.spill?.clear(); return new SandDesktopStructuredLogTelemetry({ ...options, disabled }); }
     let loaded: Awaited<ReturnType<DesktopStructuredLogSpill["load"]>> = { kind: "empty" };
     if (options.spill !== undefined && options.accountSlot !== undefined) loaded = await options.spill.load(options.accountSlot);

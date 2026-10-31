@@ -144,7 +144,7 @@ export function adoptCarrier(): Promise<CarrierIntake> {
   if (parentPort != null && isPortLike(parentPort)) {
     return new Promise((resolve) => {
       parentPort.on("message", (event) => resolve(adoptParentPort(parentPort, { data: event.data, ports: event.ports ?? [] })));
-      parentPort.start?.();
+      (parentPort as PortLike).start?.();
     });
   }
   return Promise.resolve(adoptForkIpc(process.argv));
