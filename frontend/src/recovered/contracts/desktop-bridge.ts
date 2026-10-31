@@ -355,6 +355,7 @@ export interface TelemetryDesktopBridge {
 }
 
 export interface AgentDesktopBridge {
+  getBoxRuntime(): Promise<{ mode: "remote" | "local-docker"; status: { ready: boolean } }>;
   getPinnedAgents(): Promise<string[] | null>;
   setPinnedAgents(pinnedAgentIds: readonly string[]): Promise<string[] | null>;
   getSidebarSections(): Promise<SidebarSection[] | null>;

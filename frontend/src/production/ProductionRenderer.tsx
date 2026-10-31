@@ -889,6 +889,14 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
   const [isRosterRetrying, setIsRosterRetrying] = useState(false);
   const [deepLinkInfo, setDeepLinkInfo] = useState<DeepLinkInfo | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [localRuntimeEnabled, setLocalRuntimeEnabled] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void bridge?.agent.getBoxRuntime().then((runtime) => {
+      if (active) setLocalRuntimeEnabled(runtime.mode === "local-docker");
+    }).catch(() => { if (active) setLocalRuntimeEnabled(false); });
+    return () => { active = false; };
+  }, [bridge]);
   const [windowFullscreen, setWindowFullscreen] = useState(false);
   const [windowMaximized, setWindowMaximized] = useState(false);
   const [agentNetworkEnabled, setAgentNetworkEnabled] = useState(false);
@@ -2113,10 +2121,7 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
   );
   const resolveOnboarding = useCallback(async (status: CursorAuthStatus, hasSeenOnboarding: boolean): Promise<void> => {
     const accountScopeGeneration = accountScopeGenerationRef.current;
-    if (status.kind !== "logged-in") {
-      setOnboardingOpen(false);
-      return;
-    }
+    if (status.kind !== "logged-in" && !localRuntimeEnabled) { setOnboardingOpen(false); return; }
     let agentCount: number | null = null;
     if (!hasSeenOnboarding && client != null) {
       try {
@@ -2133,7 +2138,12 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
     }
     if (accountScopeGenerationRef.current !== accountScopeGeneration) return;
     setOnboardingOpen(route === "onboarding");
-  }, [bridge, client]);
+  }, [bridge, client, localRuntimeEnabled]);
+
+  useEffect(() => {
+    if (account == null || !localRuntimeEnabled) return;
+    void bridge.onboarding.getSeen().then((seen) => resolveOnboarding(account, seen)).catch(() => {});
+  }, [account, bridge, localRuntimeEnabled, resolveOnboarding]);
 
   useEffect(() => {
     if (computer.isOpen) setComputerViewerRetained(true);
@@ -2148,7 +2158,7 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
     const isCurrent = () => rosterAttemptRef.current === attempt
       && accountScopeGenerationRef.current === accountScopeGeneration
       && transportScopeGenerationRef.current === transportScopeGeneration
-      && accountRef.current?.kind === "logged-in";
+      && (accountRef.current?.kind === "logged-in" || localRuntimeEnabled);
     setIsRosterRetrying(true);
     try {
       const projected = projectRendererAgents(await client.call("listAgents"));
@@ -2171,7 +2181,7 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
     } finally {
       if (isCurrent()) setIsRosterRetrying(false);
     }
-  }, [client, selectionStore]);
+  }, [client, localRuntimeEnabled, selectionStore]);
 
   const [connectionController] = useState(() => client == null
     ? null
@@ -3346,9 +3356,9 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
     return commands;
   }, [activeAgent, agentChannelsController, bridge, computerUpdateAction, hiddenAgents.length, openCommandPaletteInfo, openComputerUpdateConfirm, orgChartIsAvailable, themePreference, updatePaletteCommand]);
 
-  const showSignIn = bridge != null && account != null && account.kind !== "logged-in";
-  const showRootLoading = bridge != null && account?.kind === "logged-in" && activeAgent == null && transport === "connecting" && !onboardingOpen;
-  const showRootEmptyWorkspace = bridge != null && account?.kind === "logged-in" && transport === "connected" && hasLoadedAgents && agents.length === 0 && activeAgent == null && workspaceRoute == null && !onboardingOpen;
+  const showSignIn = bridge != null && !localRuntimeEnabled && account != null && account.kind !== "logged-in";
+  const showRootLoading = bridge != null && activeAgent == null && transport === "connecting" && !onboardingOpen;
+  const showRootEmptyWorkspace = bridge != null && transport === "connected" && hasLoadedAgents && agents.length === 0 && activeAgent == null && workspaceRoute == null && !onboardingOpen;
   const accessCoverComposition = useMemo(() => projectAccessCoverComposition({
     access: sandAccess,
     roster: accessRosterSnapshot,
@@ -3682,8 +3692,8 @@ export function ProductionRenderer({ bridge, coordinatorPort }: ProductionRender
         isVisible={accessCoverComposition.isVisible}
       /> : null}
       {showSignIn && bridge != null && account != null ? <SignInLanding account={account} bridge={bridge} onStatus={setAccount} /> : null}
-      {onboardingOpen && account?.kind === "logged-in" && bridge != null ? <SignedInOnboarding
-        accountSlot={account.authId ?? account.email ?? "account"}
+      {onboardingOpen && bridge != null && (account?.kind === "logged-in" || localRuntimeEnabled) ? <SignedInOnboarding
+        accountSlot={account?.kind === "logged-in" ? account.authId ?? account.email ?? "account" : "local-docker"}
         bridge={bridge}
         client={client}
         computerStatus={onboardingComputerStatus}

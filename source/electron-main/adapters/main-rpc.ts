@@ -9,7 +9,7 @@ import type { ElectronProductionAdapterBindings } from "../production-adapters.j
 import type { ProductionDisposable, ProductionServiceContext } from "../main-production-services.js";
 import { createElectronProductionIpcMainBinding, type ElectronProductionIpcMainSource } from "./ipc.js";
 import { requireFunction, requireObject } from "./provider-guards.js";
-import { getLocalDockerStatus, startLocalDockerBox } from "../box/local-docker-host-connector.js";
+import { getLocalDockerStatus } from "../box/local-docker-host-connector.js";
 
 type ExistingMainRpcCoreDeps = Pick<MainEdgeWiringDeps,
   "settingsStore"
@@ -76,19 +76,16 @@ export function createElectronProductionMainRpcBinding(
           const trimmed = apiKey.trim();
           store.setLocalGeminiEnabled(true);
           store.setInferenceProvider("gemini");
-          store.setBoxRuntime("local-docker");
           if (trimmed.length > 0) await context.secretsStores.userSecretsStore.upsert({ GEMINI_API_KEY: trimmed });
           const keys = await context.secretsStores.userSecretsStore.listKeys();
           if (!keys.includes("GEMINI_API_KEY")) throw new Error("Inserisci la tua chiave API Google Gemini per continuare.");
-          let detail: string | undefined;
-          try { await startLocalDockerBox(String(Reflect.get(store, "settingsPath"))); }
-          catch (error) { detail = error instanceof Error ? error.message : String(error); }
-          context.boxRecovery.restartCoordinator();
-          const docker = await getLocalDockerStatus(String(Reflect.get(store, "settingsPath")));
-          const configured = store.getLocalGeminiEnabled() && store.getInferenceProvider() === "gemini" && keys.includes("GEMINI_API_KEY");
-          const result = { enabled: true, configured, ready: configured && docker.ready, docker, ...(detail === undefined ? {} : { detail }) };
-          if (result.ready) void context.secretsStores.pushBoxSecrets.push("local-gemini-setup");
-          return result;
+          const settingsPath = String(Reflect.get(store, "settingsPath"));
+          void getLocalDockerStatus(settingsPath).then((docker) => {
+            if (!docker.ready) return;
+            void context.secretsStores.pushBoxSecrets.push("local-gemini-setup");
+            context.boxRecovery.restartCoordinator();
+          }).catch(() => undefined);
+          return { enabled: true, configured: true, ready: false };
         },
         readLiveUpdateService: () => {
           try {

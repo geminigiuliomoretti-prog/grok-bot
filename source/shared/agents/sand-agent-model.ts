@@ -1,4 +1,4 @@
-export const SAND_SUMMARIZATION_MODEL_ID = "gemini-2.5-flash";
+export const SAND_SUMMARIZATION_MODEL_ID = "gemini-3.8-flash";
 export const SAND_COMPUTER_USE_SUBAGENT_MODEL_ID = "claude-opus-4-8";
 
 export interface SandAgentModelParameter { readonly id: string; readonly value: string; }

@@ -89,7 +89,7 @@ function geminiCredential(): string {
 }
 
 function configuredGeminiModel(): string {
-  return process.env.SAND_GEMINI_MODEL?.trim() || "gemini-2.5-pro";
+  return process.env.SAND_GEMINI_MODEL?.trim() || "gemini-3.8-flash";
 }
 
 function openRouterCredential(): string {
