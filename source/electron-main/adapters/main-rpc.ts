@@ -1,3 +1,5 @@
+import { readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { serveMainEdge, type MainEdgeWiringDeps } from "../main-edge-wiring.js";
 import {
   MAIN_METHOD_TABLE,
@@ -76,10 +78,32 @@ export function createElectronProductionMainRpcBinding(
           const trimmed = apiKey.trim();
           store.setLocalGeminiEnabled(true);
           store.setInferenceProvider("gemini");
-          if (trimmed.length > 0) await context.secretsStores.userSecretsStore.upsert({ GEMINI_API_KEY: trimmed });
+          const settingsPath = String(Reflect.get(store, "settingsPath"));
+          if (trimmed.length > 0) {
+            await context.secretsStores.userSecretsStore.upsert({ GEMINI_API_KEY: trimmed });
+            try {
+              const rootDir = dirname(settingsPath);
+              const boxSecretsFile = join(rootDir, "box-secrets.json");
+              let currentSecrets = {};
+              try {
+                const parsed = JSON.parse(await readFile(boxSecretsFile, "utf8"));
+                if (parsed && typeof parsed.secrets === "object" && parsed.secrets != null) currentSecrets = parsed.secrets;
+              } catch {}
+              currentSecrets.GEMINI_API_KEY = trimmed;
+              await writeFile(boxSecretsFile, JSON.stringify({ version: 1, secrets: currentSecrets }, null, 2), { encoding: "utf8", mode: 0o600 });
+              const envFile = join(rootDir, ".env");
+              let envContent = "";
+              try { envContent = await readFile(envFile, "utf8"); } catch {}
+              if (!envContent.includes("GEMINI_API_KEY=")) {
+                envContent += "\nGEMINI_API_KEY=" + trimmed + "\n";
+              } else {
+                envContent = envContent.replace(/^GEMINI_API_KEY=.*$/m, "GEMINI_API_KEY=" + trimmed);
+              }
+              await writeFile(envFile, envContent.trim() + "\n", "utf8");
+            } catch {}
+          }
           const keys = await context.secretsStores.userSecretsStore.listKeys();
           if (!keys.includes("GEMINI_API_KEY")) throw new Error("Inserisci la tua chiave API Google Gemini per continuare.");
-          const settingsPath = String(Reflect.get(store, "settingsPath"));
           void getLocalDockerStatus(settingsPath).then((docker) => {
             if (!docker.ready) return;
             void context.secretsStores.pushBoxSecrets.push("local-gemini-setup");

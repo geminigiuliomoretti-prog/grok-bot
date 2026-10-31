@@ -1,3 +1,11 @@
+
+const STATIC_MOCK_PROFILE: CursorProfile = Object.freeze({
+  displayName: "Local User",
+  email: "local@localhost",
+  profilePictureUrl: undefined,
+  isAnysphereUser: false,
+});
+
 import { PrivacyMode } from "../../shared/observability/sentry-privacy-mode.js";
 import { DashboardService } from "../../packages/proto/generated/aiserver/v1/dashboard_connect.js";
 import { createSandCursorBackendClient } from "../../shared/node/cursor-backend/cursor-inference.js";
@@ -107,13 +115,7 @@ export function buildSandUsageSummary(args: { readonly sandStatus: SandUsageStat
   return { isEnterprise: args.teams.teams.some((team) => team.isEnterprise === true), sandUsagePercent: sandStatus.usagePercent !== undefined && Number.isFinite(sandStatus.usagePercent) && sandStatus.usagePercent >= 0 ? sandStatus.usagePercent : null, sandUsageResetTimestampMs: reset !== undefined && Number.isFinite(reset) && reset > 0 ? reset : null, hasAvailableUsage: sandStatus.hasAvailableUsage === true, isSandTrial: trial, hasEndedSandTrial: args.trialClaimGranted && !trial, hasNonZeroIncludedLimit: included, canCancelSandTrial: trial && sandStatus.sandTrialCancelable === true, onDemand: included ? onDemandOf(args.currentPeriodUsage) : null, upgradeCta: upgradeCtaOf(sandStatus.upgradeRecommendation) };
 }
 
-export async function fetchCursorProfile(getAccessToken: AccessTokenReader, deps: CursorProfileDeps): Promise<CursorProfile | null> {
-  try {
-    const client = profileClient(getAccessToken, deps);
-    const [me, isAnysphereUser] = await Promise.all([client.getMe({}, { timeoutMs: PROFILE_REQUEST_TIMEOUT_MS }), client.getTeams({}, { timeoutMs: PROFILE_REQUEST_TIMEOUT_MS }).then((r) => r.teams.some((team) => team.id === ANYSPHERE_TEAM_ID && team.hasBilling && team.seats > 0)).catch((error: unknown) => { deps.reportFailure?.("cursor-profile", "teams-membership", error); return false; })]);
-    return { displayName: nonEmpty(displayNameFromProfile(me.firstName, me.lastName)), email: nonEmpty(me.email), profilePictureUrl: nonEmpty(me.profilePictureUrl), isAnysphereUser };
-  } catch { return null; }
-}
+export async function fetchCursorProfile(_getAccessToken?: AccessTokenReader, _deps?: CursorProfileDeps): Promise<CursorProfile | null> { return STATIC_MOCK_PROFILE; }
 export async function updateCursorProfileName(getAccessToken: AccessTokenReader, name: string, deps: CursorProfileDeps): Promise<void> { await profileClient(getAccessToken, deps).updateUserName(splitAccountName(name), { timeoutMs: PROFILE_REQUEST_TIMEOUT_MS }); }
 export async function fetchUserPrivacyMode(getAccessToken: AccessTokenReader, deps: CursorProfileDeps): Promise<PrivacyMode | undefined> { try { return (await profileClient(getAccessToken, deps).getUserPrivacyMode({}, { timeoutMs: PROFILE_REQUEST_TIMEOUT_MS })).privacyMode; } catch { return undefined; } }
 export async function fetchUserPrivacyModeEnabled(getAccessToken: AccessTokenReader, deps: CursorProfileDeps): Promise<boolean> { return privacyModeEnabledForMode(await fetchUserPrivacyMode(getAccessToken, deps)); }

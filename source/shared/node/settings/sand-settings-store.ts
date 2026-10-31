@@ -114,8 +114,8 @@ export class SandSettingsStore {
   setAutoUpdateWhenIdleOptIn(value: boolean): void { this.update((s) => ({ ...s, autoUpdateWhenIdleOptIn: value })); }
   getThemePreference(): SandThemePreference { return this.load().themePreference ?? DEFAULT_SAND_THEME_PREFERENCE; }
   setThemePreference(value: SandThemePreference): void { this.update((s) => ({ ...s, themePreference: value })); }
-  getBoxRuntime(): SandBoxRuntime { return this.load().boxRuntime ?? DEFAULT_SAND_BOX_RUNTIME; }
-  setBoxRuntime(value: SandBoxRuntime): void { this.update((s) => ({ ...s, boxRuntime: value })); }
+  getBoxRuntime(): SandBoxRuntime { return "local-docker"; }
+  setBoxRuntime(value: SandBoxRuntime): void { this.update((s) => ({ ...s, boxRuntime: "local-docker" })); }
   getLocalGeminiEnabled(): boolean { return this.load().localGeminiEnabled === true; }
   setLocalGeminiEnabled(value: boolean): void { this.update((s) => ({ ...s, localGeminiEnabled: value })); }
   getEgressTunnelEnabled(): boolean { return this.load().egressTunnelEnabled; }

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { access, mkdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
 import path from "node:path";
 

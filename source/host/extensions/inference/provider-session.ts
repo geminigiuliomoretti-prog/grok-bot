@@ -25,7 +25,7 @@ const GROK_ROUTER_SYSTEM_PROMPT = [
   "You are Grok Bot, a warm, concise desktop assistant.",
   "You are running inside Grok Bot, not inside Codex CLI or Claude Code.",
   "The tools supplied with this request are Grok Bot's already-connected plugins and accounts. Use them whenever they are relevant instead of claiming that a plugin is unavailable or asking the user to reconnect it.",
-  "Never ask for an API key for an already-connected plugin. Respond directly to the user in natural language after completing any necessary tool calls.",
+  "Crucial: To speak or reply to the user in chat, always call the SendMessage tool with your message (e.g. {\"type\":\"text\",\"content\":\"your reply\"}). Plain assistant text is not visible to the user; only text passed through the SendMessage tool reaches the user.\nNever ask for an API key for an already-connected plugin.",
 ].join("\n");
 
 function recordRoutedUsage(provider: RoutedProvider, usage: UsageRecord): void {
@@ -89,7 +89,7 @@ function geminiCredential(): string {
 }
 
 function configuredGeminiModel(): string {
-  return process.env.SAND_GEMINI_MODEL?.trim() || "gemini-3.8-flash";
+  return process.env.SAND_GEMINI_MODEL?.trim() || "gemini-3.5-flash";
 }
 
 function openRouterCredential(): string {
@@ -297,11 +297,36 @@ function toToolSet(definitions: readonly Loose[] | undefined, executeTool?: Rout
 function geminiExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void) {
   const id = configuredGeminiModel();
   const model: LanguageModelV1 = createOpenAI({ apiKey: geminiCredential(), baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/", compatibility: "compatible", name: "gemini" }).chat(id as any);
-  const tools = toToolSet(definitions, executeTool);
+  let didCallSendMessage = false;
+  const wrappedExecuteTool: RoutedToolExecutor | undefined = executeTool == null ? undefined : async (toolDef, args, toolCallId) => {
+    if (typeof toolDef.name === "string" && toolDef.name.toLowerCase() === "sendmessage") {
+      didCallSendMessage = true;
+    }
+    return await executeTool(toolDef, args, toolCallId);
+  };
+  const tools = toToolSet(definitions, wrappedExecuteTool);
   const result = streamText({ model, system: GROK_ROUTER_SYSTEM_PROMPT, messages: messages as CoreMessage[], ...(tools === undefined ? {} : { tools }), toolCallStreaming: true, maxSteps: tools === undefined ? 1 : 8 });
   const extendedUsage = result.usage.then(value => ({ inputTokens: value.promptTokens, outputTokens: value.completionTokens, cacheReadTokens: 0, cacheWriteTokens: 0, maxTokens: 0 }));
   if (onUsage != null) void extendedUsage.then(onUsage);
-  return { fullStream: result.fullStream, response: result.response, usage: result.usage, extendedUsage, providerMetadata: result.providerMetadata, invocationId: Promise.resolve(invocationId) };
+  const fullStream = (async function* () {
+    let text = "";
+    for await (const chunk of result.fullStream) {
+      if (chunk.type === "text-delta" && typeof (chunk as any).textDelta === "string") {
+        text += (chunk as any).textDelta;
+      }
+      yield chunk;
+    }
+    if (!didCallSendMessage && executeTool != null && text.trim().length > 0) {
+      const sendDef = definitions?.find(d => typeof d.name === "string" && d.name.toLowerCase() === "sendmessage");
+      if (sendDef != null) {
+        try {
+          await executeTool(sendDef, { type: "text", content: text.trim() }, `auto-${invocationId}`);
+          didCallSendMessage = true;
+        } catch {}
+      }
+    }
+  })();
+  return { fullStream, response: result.response, usage: result.usage, extendedUsage, providerMetadata: result.providerMetadata, invocationId: Promise.resolve(invocationId) };
 }
 
 function openRouterExecutor(messages: readonly ProviderMessage[], invocationId: string, definitions?: readonly Loose[], executeTool?: RoutedToolExecutor, onUsage?: (usage: UsageRecord) => void) {

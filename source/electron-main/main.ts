@@ -241,9 +241,7 @@ export function startElectronMain(deps: ElectronMainDependencies): ElectronMainR
   });
   deps.startup.bootstrapBeforeSingleInstance();
 
-  deps.app.disableHardwareAcceleration();
   deps.app.commandLine.appendSwitch("no-sandbox");
-  deps.app.commandLine.appendSwitch("disable-gpu");
 
   const isPrimaryInstance = !deps.app.isPackaged || deps.app.requestSingleInstanceLock();
   if (!isPrimaryInstance) deps.app.quit();

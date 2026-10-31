@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
+import { createWriteStream, statSync } from "node:fs";
 import { chmod, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -122,14 +123,196 @@ async function inspectContainer(containerName = LOCAL_DOCKER_BOX_CONTAINER): Pro
   } catch { throw new Error("Docker returned malformed container inspection data."); }
 }
 
+let localHostProcess: any = null;
+
+function findNodeExecutable(): string {
+  if (process.platform === 'win32') {
+    const candidates = [
+      'node.exe',
+      'C:\\Program Files\\nodejs\\node.exe',
+      'C:\\Program Files (x86)\\nodejs\\node.exe',
+      join(homedir(), 'AppData\\Roaming\\nvm\\current\\node.exe'),
+      join(homedir(), 'AppData\\Local\\Programs\\node\\node.exe'),
+    ];
+    for (const c of candidates) {
+      try {
+        if (statSync(c).isFile()) return c;
+      } catch {}
+    }
+    return 'node.exe';
+  }
+  return 'node';
+}
+
+function resolveDepsDir(): string {
+  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
+  const resourcesPath = (process as any).resourcesPath ?? resolve(dirname(process.execPath), "resources");
+  const unpackedFromModule = moduleDirectory.includes("app.asar")
+    ? resolve(moduleDirectory.replace(/app\.asar([\\/]|$)/, "app.asar.unpacked$1"), "../deps")
+    : "";
+  const candidates = [
+    unpackedFromModule,
+    resolve(resourcesPath, "app.asar.unpacked/dist/deps"),
+    resolve(dirname(process.execPath), "resources/app.asar.unpacked/dist/deps"),
+    resolve(moduleDirectory, "../../app.asar.unpacked/dist/deps"),
+    resolve(moduleDirectory, "../../../app.asar.unpacked/dist/deps"),
+    resolve(process.cwd(), "dist/deps"),
+    resolve(process.cwd(), ".build/baseline-onboarding-copy-stage/dist/deps"),
+    resolve(moduleDirectory, "../deps"),
+  ];
+  for (const c of candidates) {
+    if (!c) continue;
+    if (/[\\/]app\.asar([\\/]|$)/.test(c)) continue;
+    try {
+      if (statSync(c).isDirectory()) return c;
+    } catch {}
+  }
+  return "";
+}
+
+async function freeStalePortIfDead(port: number): Promise<void> {
+  if (process.platform !== "win32") return;
+  try {
+    const { execSync } = await import("node:child_process");
+    const output = execSync("netstat -ano -p tcp", { encoding: "utf8" });
+    for (const line of output.split("\n")) {
+      if (line.includes(":" + port) && line.includes("LISTENING")) {
+        const parts = line.trim().split(/\s+/);
+        const pid = parts[parts.length - 1];
+        if (pid && pid !== "0" && pid !== String(process.pid)) {
+          execSync("taskkill /pid " + pid + " /F /T", { stdio: "ignore" });
+        }
+      }
+    }
+  } catch {}
+}
+
+async function ensureLocalNativeHost(settingsPath: string, inferenceCredential?: InferenceCredential, agentId?: string): Promise<GatewayConnection> {
+  const token = await readOrCreateToken(settingsPath);
+  const gatewayUrl = getAgentGatewayUrl(agentId);
+  if (await gatewayReady(token, gatewayUrl)) {
+    return { baseUrl: gatewayUrl, token };
+  }
+  const offset = getAgentPortOffset(agentId);
+  const port = 1340 + offset;
+  await freeStalePortIfDead(port);
+
+  const hostBundle = await stageCurrentHostBundle(settingsPath);
+  const depsDir = resolveDepsDir();
+  const inferenceFile = inferenceCredential == null ? undefined : await persistInferenceCredential(settingsPath, inferenceCredential);
+  const rootDir = dirname(settingsPath);
+
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    SAND_PACKAGED: "1",
+    SAND_DATA_ROOT: rootDir,
+    SAND_SUPERVISOR_ENABLED: "1",
+    SAND_BOX_AUTO_UPDATE: "0",
+    SAND_USE_EXISTING_BOX_EXEC_DAEMON: "0",
+    SAND_BOX_EXEC_DAEMON_PATH: hostBundle.boxExecDaemonPath,
+    SAND_GATEWAY_BIND_HOST: "127.0.0.1",
+    SAND_HOST_PORT: String(port),
+    SAND_GATEWAY_TOKEN: token,
+    SAND_BACKEND_URL: inferenceCredential?.backendUrl ?? "https://api2.cursor.sh/",
+    ...(depsDir ? { NODE_PATH: depsDir, SAND_TREE_SITTER_NODE_DEPS: depsDir } : {}),
+    ...(inferenceFile ? { SAND_DEV_INFERENCE_TOKEN_FILE: inferenceFile } : {}),
+  };
+  try {
+    const electron = require("electron");
+    if (electron?.safeStorage?.isEncryptionAvailable()) {
+      const userSecretsPath = join(electron.app.getPath("userData"), "user-secrets.json");
+      const raw = JSON.parse(await readFile(userSecretsPath, "utf8"));
+      const decryptedSecrets: Record<string, string> = {};
+      for (const acc of Object.values(raw.accounts ?? {})) {
+        if (typeof acc === "object" && acc != null) {
+          for (const [k, v] of Object.entries(acc as Record<string, string>)) {
+            try {
+              decryptedSecrets[k] = electron.safeStorage.decryptString(Buffer.from(v, "base64"));
+            } catch {}
+          }
+        }
+      }
+      if (Object.keys(decryptedSecrets).length > 0) {
+        const boxSecretsFile = join(rootDir, "box-secrets.json");
+        let existingBoxSecrets: Record<string, string> = {};
+        try {
+          const parsed = JSON.parse(await readFile(boxSecretsFile, "utf8"));
+          if (parsed && typeof parsed.secrets === "object") existingBoxSecrets = parsed.secrets;
+        } catch {}
+        Object.assign(existingBoxSecrets, decryptedSecrets);
+        await writeFile(boxSecretsFile, JSON.stringify({ version: 1, secrets: existingBoxSecrets }, null, 2), "utf8");
+        const envFile = join(rootDir, ".env");
+        let envContent = "";
+        try { envContent = await readFile(envFile, "utf8"); } catch {}
+        for (const [k, v] of Object.entries(existingBoxSecrets)) {
+          env[k] = v;
+          const reg = new RegExp("^" + k + "=.*$", "m");
+          if (reg.test(envContent)) envContent = envContent.replace(reg, k + "=" + v);
+          else envContent += "\n" + k + "=" + v + "\n";
+        }
+        await writeFile(envFile, envContent.trim() + "\n", "utf8");
+      }
+    }
+  } catch {}
+
+  try {
+    const boxSecretsFile = join(rootDir, "box-secrets.json");
+    const parsed = JSON.parse(await readFile(boxSecretsFile, "utf8"));
+    if (parsed && typeof parsed.secrets === "object") {
+      for (const [k, v] of Object.entries(parsed.secrets)) {
+        if (typeof v === "string") env[k] = v;
+      }
+    }
+  } catch {}
+
+  const nodeExecutable = findNodeExecutable();
+  const child = spawn(nodeExecutable, [hostBundle.path], {
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: true,
+    windowsHide: true,
+  });
+
+  try {
+    const logsDir = join(rootDir, "logs");
+    await mkdir(logsDir, { recursive: true });
+    const logFile = createWriteStream(join(logsDir, "native-host.log"), { flags: "a" });
+    child.stdout?.pipe(logFile);
+    child.stderr?.pipe(logFile);
+  } catch {}
+
+  let childStderr = "";
+  child.stderr?.on("data", (chunk: Buffer) => {
+    childStderr += chunk.toString();
+    if (childStderr.length > 50_000) childStderr = childStderr.slice(-50_000);
+  });
+
+  child.unref();
+  localHostProcess = child;
+
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    if (await gatewayReady(token, gatewayUrl)) {
+      return { baseUrl: gatewayUrl, token };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  throw new Error("Local computer process did not expose its gateway within 15 seconds. " + childStderr.trim());
+}
+
 export async function getLocalDockerStatus(settingsPath: string): Promise<LocalDockerStatus> {
+  const token = await readOrCreateToken(settingsPath);
+  if (await gatewayReady(token)) {
+    return { available: true, running: true, ready: true, containerName: "local-native", image: "native-node", detail: "Local computer is ready." };
+  }
   const daemon = await runDocker(["info", "--format", "{{.ServerVersion}}"]).catch(() => ({ ok: false, output: "Docker is not installed." }));
-  if (!daemon.ok) return { available: false, running: false, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: LOCAL_DOCKER_BOX_IMAGE, detail: daemon.output || "Docker is not running." };
-  const inspected = await inspectContainer();
-  if (!inspected.exists) return { available: true, running: false, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: LOCAL_DOCKER_BOX_IMAGE, detail: "Ready to create the local VM." };
-  if (!inspected.owned) return { available: true, running: inspected.running, ready: false, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: inspected.image, detail: `Container ${LOCAL_DOCKER_BOX_CONTAINER} exists but is not owned by Grok Bot.` };
-  const ready = inspected.running && await gatewayReady(await readOrCreateToken(settingsPath));
-  return { available: true, running: inspected.running, ready, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: inspected.image, detail: ready ? "Local Docker VM is ready." : inspected.running ? "Container is starting." : "Local Docker VM is stopped." };
+  if (daemon.ok) {
+    const inspected = await inspectContainer();
+    if (inspected.exists && inspected.running && await gatewayReady(token)) {
+      return { available: true, running: true, ready: true, containerName: LOCAL_DOCKER_BOX_CONTAINER, image: inspected.image, detail: "Local Docker VM is ready." };
+    }
+  }
+  return { available: true, running: false, ready: false, containerName: "local-native", image: "native-node", detail: "Ready to start local computer." };
 }
 
 let ensureInFlight: Promise<GatewayConnection> | undefined;
@@ -167,10 +350,30 @@ async function stageCurrentHostBundle(settingsPath: string): Promise<LocalHostBu
     return target;
   };
   await mkdir(directory, { recursive: true });
+  await persistRuntime("host-main.cjs", hostBytes);
+  const hostPath = await persistRuntime("host/host-main.cjs", hostBytes);
+  const boxExecDaemonPath = await persistRuntime("box-exec-daemon/main.cjs", boxExecDaemonBytes);
+  for (const workerRel of [
+    "host/agent-isolation/agent-store-worker.cjs",
+    "host/agent-isolation/transcript-mirror-worker.cjs",
+    "host/extensions/box-store-sync/box-store-vacuum-worker.cjs",
+    "host/extensions/content-search/search-index-worker.cjs",
+  ]) {
+    try {
+      const workerBytes = await readRuntime(workerRel);
+      await persistRuntime(workerRel, workerBytes);
+      await persistRuntime(workerRel.replace(/^host\//, ""), workerBytes);
+    } catch {}
+  }
+  try {
+    const parentDaemon = join(directory, "..", "box-exec-daemon", "main.cjs");
+    await mkdir(dirname(parentDaemon), { recursive: true });
+    await writeFile(parentDaemon, boxExecDaemonBytes, { mode: 0o600 });
+  } catch {}
   return {
-    path: await persistRuntime("host-main.cjs", hostBytes),
+    path: hostPath,
     sha256,
-    boxExecDaemonPath: await persistRuntime("box-exec-daemon/main.cjs", boxExecDaemonBytes),
+    boxExecDaemonPath,
     boxExecDaemonSha256,
   };
 }
@@ -184,6 +387,12 @@ async function localAuthMountArguments(): Promise<string[]> {
 }
 
 async function ensureLocalDockerBox(settingsPath: string, inferenceCredential?: InferenceCredential, agentId?: string): Promise<GatewayConnection> {
+  try {
+    return await ensureLocalNativeHost(settingsPath, inferenceCredential, agentId);
+  } catch (nativeError) {
+    const daemonCheck = await runDocker(["info", "--format", "{{.ServerVersion}}"]).catch(() => ({ ok: false, output: "Docker is not installed." }));
+    if (!daemonCheck.ok) throw nativeError;
+  }
   const containerName = getAgentContainerName(agentId);
   const offset = getAgentPortOffset(agentId);
   const gatewayUrl = getAgentGatewayUrl(agentId);
@@ -244,11 +453,21 @@ export async function startLocalDockerBox(settingsPath: string): Promise<Gateway
 }
 
 export async function stopLocalDockerBox(): Promise<void> {
-  const inspected = await inspectContainer();
-  if (!inspected.exists || !inspected.running) return;
-  if (!inspected.owned) throw new Error(`Refusing to stop unowned container ${LOCAL_DOCKER_BOX_CONTAINER}.`);
-  const stopped = await runDocker(["stop", LOCAL_DOCKER_BOX_CONTAINER]);
-  if (!stopped.ok) throw new Error(`Could not stop the local Docker VM: ${stopped.output}`);
+  if (localHostProcess && !localHostProcess.killed) {
+    try {
+      if (process.platform === "win32" && localHostProcess.pid) {
+        spawn("taskkill", ["/pid", String(localHostProcess.pid), "/T", "/F"]);
+      } else {
+        localHostProcess.kill();
+      }
+    } catch {}
+    localHostProcess = null;
+  }
+  await freeStalePortIfDead(1340);
+  await freeStalePortIfDead(1337);
+  const inspected = await inspectContainer().catch(() => ({ exists: false, running: false, owned: false }));
+  if (!inspected.exists || !inspected.running || !inspected.owned) return;
+  await runDocker(["stop", LOCAL_DOCKER_BOX_CONTAINER]).catch(() => undefined);
 }
 
 export function createSettingsRoutedHostConnector(

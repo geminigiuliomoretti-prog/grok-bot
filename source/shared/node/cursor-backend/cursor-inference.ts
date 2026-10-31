@@ -66,6 +66,9 @@ export async function fetchSandPrivacyMode(options: PrivacyLookupOptions, client
   },
   { getAccessToken: async () => options.accessToken, getMachineId: async () => options.machineId }
 )): Promise<PrivacyMode> {
+  if (options.accessToken === "dummy-local-token" || !options.accessToken || options.accessToken === "local-user") {
+    return PrivacyMode.NO_STORAGE;
+  }
   return (await client.getUserPrivacyMode(new GetUserPrivacyModeRequest({ inferredPrivacyMode: PrivacyMode.NO_STORAGE }), { timeoutMs: PRIVACY_MODE_FETCH_TIMEOUT_MS })).privacyMode;
 }
 let cachedPrivacyMode: { backendUrl: string; accountScope: string; value: Promise<PrivacyMode | undefined>; expiresAt?: number } | undefined;

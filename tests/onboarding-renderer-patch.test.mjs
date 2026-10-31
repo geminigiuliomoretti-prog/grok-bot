@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { patchOriginalOnboardingBootstrap, patchOriginalPreloadRpc, patchOriginalSettingsRegistry, patchOriginalSettingsPanel } from "../scripts/lib/router-renderer-patch.mjs";
+import { patchOriginalOnboardingBootstrap, patchOriginalOnboardingCompletion, patchOriginalPreloadRpc, patchOriginalSettingsRegistry, patchOriginalSettingsPanel } from "../scripts/lib/router-renderer-patch.mjs";
+
+const ORIGINAL_FORCE_G = 'case"force-onboarding":return{kind:"onboarding",runId:n.runId+1,resolveSeq:0,forced:!0,signedIn:!1,owedShell:null}';
+const ORIGINAL_COMPLETE_Y = 'case"force-onboarding":return{kind:"onboarding",runId:n.runId+1,resolveSeq:n.resolveSeq+1,forced:!0,signedIn:!1,owedShell:null};case"skip-onboarding":return e.isSignedIn?{kind:"shell",runId:n.runId,resolveSeq:n.resolveSeq,provisional:!1}:n;case"complete-onboarding":return n}';
+const ORIGINAL_COMPLETE_K = 'owedShell:null};case"skip-onboarding":return e.isSignedIn||n.signedIn?{kind:"shell",runId:n.runId,resolveSeq:n.resolveSeq,provisional:!1}:n.forced?{...n,forced:!1}:n;case"complete-onboarding":return n.signedIn?{kind:"shell",runId:n.runId,resolveSeq:n.resolveSeq,provisional:!1}:n}return e}';
+const ORIGINAL_HANDOFF = 'async function jqn(n,e){if(n.isRunning)return{kind:"already-running"};const t=e.currentAccountSlot();if(t==null)return{kind:"signed-away"};n.accountSlot!==t&&(n.agentId=null,n.accountSlot=t),n.isRunning=!0,e.enterHandOff();const s=()=>e.currentAccountSlot()===t?null:(n.isRunning=!1,{kind:"signed-away"});try{await e.waitForComputer();const r=s();if(r!=null)return r;if(n.agentId==null){if(await e.isAccountOnboarded()){const l=s();return l??(await e.markSeen(),{kind:"already-onboarded"})}const o=s();if(o!=null)return o;n.agentId=await e.createTeammate(l=>{n.agentId=l})}const i=s();return i??(await e.markSeen(),{kind:"completed",agentId:n.agentId})}catch(r){return n.isRunning=!1,{kind:"failed",error:r}}}';
 
 const ORIGINAL_GATE = 'return t.status!=="ready"?{step:n4e,dailyTools:[],draft:Ptt}:{step:kMt(e.step,s),dailyTools:e.dailyTools,draft:e.draft}}';
 const ORIGINAL_REOPEN = 'r=()=>{s(),n.sandAccess.snapshots.get().state==="granted"&&e&&(e=!1,n.firstRun.forceOnboarding())}';
@@ -55,4 +60,17 @@ test("saving a Gemini key does not start or switch the Docker runtime", async ()
   assert.match(configure, /userSecretsStore\.upsert\(\{ GEMINI_API_KEY: trimmed \}\)/);
   assert.doesNotMatch(configure, /startLocalDockerBox|setBoxRuntime\("local-docker"\)/);
   assert.match(configure, /void getLocalDockerStatus\(settingsPath\)/);
+});
+
+test("onboarding completion transitions to shell and creates teammate without login or agent veto", () => {
+  const source = `${ORIGINAL_FORCE_G};${ORIGINAL_COMPLETE_Y};${ORIGINAL_COMPLETE_K};${ORIGINAL_HANDOFF}`;
+  const patched = patchOriginalOnboardingCompletion(source);
+
+  assert.match(patched, /case"complete-onboarding":return\{kind:"shell",runId:n\.runId,resolveSeq:n\.resolveSeq,provisional:!1\}/);
+  assert.match(patched, /case"skip-onboarding":return\{kind:"shell",runId:n\.runId,resolveSeq:n\.resolveSeq,provisional:!1\}/);
+  assert.match(patched, /case"force-onboarding":return\{kind:"onboarding",runId:n\.runId\+1,resolveSeq:0,forced:!0,signedIn:!0,owedShell:null\}/);
+  assert.match(patched, /currentAccountSlot\(\)\?\?"local-user"/);
+  assert.match(patched, /n\.agentId=await e\.createTeammate\(l=>\{n\.agentId=l\}\)/);
+  assert.doesNotMatch(patched, /isAccountOnboarded/);
+  assert.doesNotMatch(patched, /n\.signedIn\?\{kind:"shell"/);
 });
