@@ -33,15 +33,63 @@ export interface StreamChunkToolCall {
   toolCallId: string;
   toolName: string;
   args: any;
+  thoughtSignature?: string | undefined;
 }
 
 export type StreamChunk = StreamChunkTextDelta | StreamChunkReasoning | StreamChunkToolCall;
 
-const PRIMARY_MODELS = ["gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.5-flash"];
-const SUMMARIZATION_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.6-flash"];
+const PRIMARY_MODELS = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.6-flash",
+  "gemini-3.7-flash",
+  "gemini-3.5-flash",
+  "gemini-3.8-flash",
+];
+
+const SUMMARIZATION_MODELS = [
+  "gemini-3.5-flash-lite",
+  "gemini-3.5-flash",
+  "gemini-3.6-flash",
+];
 
 function deferred<T>() {
   return Promise.withResolvers<T>();
+}
+
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL_MS = 600;
+
+async function waitForPacing(): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastRequestTime;
+  if (elapsed < MIN_REQUEST_INTERVAL_MS) {
+    await new Promise((r) => setTimeout(r, MIN_REQUEST_INTERVAL_MS - elapsed));
+  }
+  lastRequestTime = Date.now();
+}
+
+function parseRetryDelayMs(errText: string): number {
+  try {
+    const json = JSON.parse(errText);
+    const details = json.error?.details;
+    if (Array.isArray(details)) {
+      for (const d of details) {
+        if (typeof d["@type"] === "string" && d["@type"].includes("RetryInfo") && typeof d.retryDelay === "string") {
+          const match = d.retryDelay.match(/^([\d.]+)(s|ms)$/);
+          if (match && typeof match[1] === "string" && typeof match[2] === "string") {
+            const val = parseFloat(match[1]);
+            return match[2] === "s" ? Math.round(val * 1000) : Math.round(val);
+          }
+        }
+      }
+    }
+  } catch {}
+  const match = errText.match(/retry\s+in\s+([\d.]+)(s|ms)/i);
+  if (match && typeof match[1] === "string" && typeof match[2] === "string") {
+    const val = parseFloat(match[1]);
+    return match[2].toLowerCase() === "s" ? Math.round(val * 1000) : Math.round(val);
+  }
+  return 1200;
 }
 
 export function sanitizeGeminiSchema(schema: any): any {
@@ -127,12 +175,26 @@ export function convertMessagesToGeminiContents(
             parts.push({ text: part.text });
           } else if (part.type === "tool-call") {
             const args = typeof part.args === "string" ? JSON.parse(part.args) : (part.args ?? {});
+            const thoughtSignature =
+              part.thoughtSignature ??
+              part.thought_signature ??
+              "skip_thought_signature_validator";
             parts.push({
               functionCall: {
                 name: part.toolName,
                 args,
                 ...(part.toolCallId ? { id: part.toolCallId } : {}),
               },
+              thoughtSignature,
+            });
+          } else if (part.functionCall) {
+            const thoughtSignature =
+              part.thoughtSignature ??
+              part.thought_signature ??
+              "skip_thought_signature_validator";
+            parts.push({
+              functionCall: part.functionCall,
+              thoughtSignature,
             });
           }
         }
@@ -147,10 +209,12 @@ export function convertMessagesToGeminiContents(
       if (Array.isArray(msg.content)) {
         for (const item of msg.content) {
           if (item.type === "tool-result") {
+            const toolCallId = item.toolCallId || item.id;
             parts.push({
               functionResponse: {
-                name: item.toolName || "tool",
+                name: item.toolName || item.name || "tool",
                 response: { output: item.result ?? item.output ?? "" },
+                ...(toolCallId ? { id: toolCallId } : {}),
               },
             });
           }
@@ -160,6 +224,7 @@ export function convertMessagesToGeminiContents(
           functionResponse: {
             name: msg.name || msg.id || "tool",
             response: { output: msg.content ?? "" },
+            ...(msg.toolCallId ? { id: msg.toolCallId } : {}),
           },
         });
       }
@@ -227,12 +292,13 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
     let plainText = "";
     let reasoningText = "";
     let hasEmittedToolCall = false;
+    let lastThoughtSignature: string | undefined;
     const assistantContentParts: any[] = [];
     let actualModelUsed = candidateModels[0];
     let streamSucceeded = false;
     let lastError: unknown;
 
-    for (const model of candidateModels) {
+    modelLoop: for (const model of candidateModels) {
       actualModelUsed = model;
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse`;
       const requestBody: Record<string, any> = { contents };
@@ -245,195 +311,223 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
         requestBody.tools = [{ functionDeclarations }];
       }
 
-      try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            "x-goog-api-key": options.apiKey,
-          },
-          body: JSON.stringify(requestBody),
-        });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await waitForPacing();
 
-        if (!res.ok) {
-          const errText = await res.text().catch(() => "");
-          if (res.status === 404 || res.status === 429 || res.status === 503) {
-            console.warn(`[gemini-native] Model ${model} returned ${res.status}: ${errText.slice(0, 100)}. Falling back to next model.`);
-            lastError = new Error(`Model ${model} returned ${res.status}: ${errText}`);
-            continue;
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-goog-api-key": options.apiKey,
+            },
+            body: JSON.stringify(requestBody),
+          });
+
+          if (!res.ok) {
+            const errText = await res.text().catch(() => "");
+            if (res.status === 429 || res.status === 503) {
+              const delayMs = Math.max(1000 * (attempt + 1), parseRetryDelayMs(errText));
+              console.warn(`[gemini-native] Model ${model} returned ${res.status} (attempt ${attempt + 1}/3). Waiting ${delayMs}ms before retry.`);
+              if (attempt < 2) {
+                await new Promise((r) => setTimeout(r, delayMs));
+                continue;
+              }
+              console.warn(`[gemini-native] Model ${model} exhausted retries on ${res.status}. Falling back to next model.`);
+              lastError = new Error(`Model ${model} returned ${res.status}: ${errText}`);
+              continue modelLoop;
+            }
+            if (res.status === 404) {
+              lastError = new Error(`Model ${model} returned 404: ${errText}`);
+              continue modelLoop;
+            }
+            throw new Error(`Gemini API error (${res.status} ${res.statusText}): ${errText}`);
           }
-          throw new Error(`Gemini API error (${res.status} ${res.statusText}): ${errText}`);
-        }
 
-        if (!res.body) {
-          throw new Error(`Gemini response body was empty for ${model}`);
-        }
+          if (!res.body) {
+            throw new Error(`Gemini response body was empty for ${model}`);
+          }
 
-        let buffer = "";
-        let promptTokens = 0;
-        let completionTokens = 0;
-        let totalTokens = 0;
+          let buffer = "";
+          let promptTokens = 0;
+          let completionTokens = 0;
+          let totalTokens = 0;
 
-        for await (const chunk of res.body as any) {
-          buffer += Buffer.from(chunk).toString("utf8");
-          const lines = buffer.split("\n");
-          buffer = lines.pop() ?? "";
+          for await (const chunk of res.body as any) {
+            buffer += Buffer.from(chunk).toString("utf8");
+            const lines = buffer.split("\n");
+            buffer = lines.pop() ?? "";
 
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith("data:")) continue;
-            const dataStr = trimmed.slice(5).trim();
-            if (!dataStr || dataStr === "[DONE]") continue;
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith("data:")) continue;
+              const dataStr = trimmed.slice(5).trim();
+              if (!dataStr || dataStr === "[DONE]") continue;
 
-            let parsed: any;
-            try {
-              parsed = JSON.parse(dataStr);
-            } catch {
-              continue;
-            }
+              let parsed: any;
+              try {
+                parsed = JSON.parse(dataStr);
+              } catch {
+                continue;
+              }
 
-            if (parsed.usageMetadata) {
-              promptTokens = parsed.usageMetadata.promptTokenCount ?? promptTokens;
-              completionTokens = parsed.usageMetadata.candidatesTokenCount ?? completionTokens;
-              totalTokens = parsed.usageMetadata.totalTokenCount ?? (promptTokens + completionTokens);
-            }
+              if (parsed.usageMetadata) {
+                promptTokens = parsed.usageMetadata.promptTokenCount ?? promptTokens;
+                completionTokens = parsed.usageMetadata.candidatesTokenCount ?? completionTokens;
+                totalTokens = parsed.usageMetadata.totalTokenCount ?? (promptTokens + completionTokens);
+              }
 
-            const candidate = parsed.candidates?.[0];
-            const parts = candidate?.content?.parts;
-            if (Array.isArray(parts)) {
-              for (const part of parts) {
-                if (part.thought === true && typeof part.text === "string") {
-                  reasoningText += part.text;
-                  yield { type: "reasoning" as const, textDelta: part.text };
-                } else if (typeof part.text === "string" && part.text.length > 0) {
-                  plainText += part.text;
-                  yield { type: "text-delta" as const, textDelta: part.text };
-                } else if (part.functionCall) {
-                  hasEmittedToolCall = true;
-                  const toolName = part.functionCall.name;
-                  const toolCallId = part.functionCall.id || `call_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-                  const args = part.functionCall.args ?? {};
-
-                  // Normalization for SendMessage: Zod schema requires { type: "text", content: string }
-                  if (typeof toolName === "string" && toolName.toLowerCase() === "sendmessage") {
-                    if (args && typeof args === "object") {
-                      if (!args.type) args.type = "text";
-                      if (args.message && !args.content) args.content = args.message;
-                    }
+              const candidate = parsed.candidates?.[0];
+              const parts = candidate?.content?.parts;
+              if (Array.isArray(parts)) {
+                for (const part of parts) {
+                  const partThoughtSig = part.thoughtSignature ?? part.thought_signature;
+                  if (partThoughtSig) {
+                    lastThoughtSignature = partThoughtSig;
                   }
+                  if (part.thought === true && typeof part.text === "string") {
+                    reasoningText += part.text;
+                    yield { type: "reasoning" as const, textDelta: part.text };
+                  } else if (typeof part.text === "string" && part.text.length > 0) {
+                    plainText += part.text;
+                    yield { type: "text-delta" as const, textDelta: part.text };
+                  } else if (part.functionCall) {
+                    hasEmittedToolCall = true;
+                    const toolName = part.functionCall.name;
+                    const toolCallId = part.functionCall.id || `call_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+                    const args = part.functionCall.args ?? {};
+                    const thoughtSignature = partThoughtSig ?? lastThoughtSignature;
 
-                  assistantContentParts.push({
-                    type: "tool-call",
-                    toolCallId,
-                    toolName,
-                    args,
-                  });
+                    // Normalization for SendMessage: Zod schema requires { type: "text", content: string }
+                    if (typeof toolName === "string" && toolName.toLowerCase() === "sendmessage") {
+                      if (args && typeof args === "object") {
+                        if (!args.type) args.type = "text";
+                        if (args.message && !args.content) args.content = args.message;
+                      }
+                    }
 
-                  yield {
-                    type: "tool-call" as const,
-                    toolCallId,
-                    toolName,
-                    args,
-                  };
+                    assistantContentParts.push({
+                      type: "tool-call",
+                      toolCallId,
+                      toolName,
+                      args,
+                      ...(thoughtSignature ? { thoughtSignature } : {}),
+                    });
+
+                    yield {
+                      type: "tool-call" as const,
+                      toolCallId,
+                      toolName,
+                      args,
+                      ...(thoughtSignature ? { thoughtSignature } : {}),
+                    };
+                  }
                 }
               }
             }
           }
-        }
 
-        // Process any remainder in buffer
-        if (buffer.trim().startsWith("data:")) {
-          try {
-            const parsed = JSON.parse(buffer.trim().slice(5).trim());
-            if (parsed.usageMetadata) {
-              promptTokens = parsed.usageMetadata.promptTokenCount ?? promptTokens;
-              completionTokens = parsed.usageMetadata.candidatesTokenCount ?? completionTokens;
-              totalTokens = parsed.usageMetadata.totalTokenCount ?? (promptTokens + completionTokens);
-            }
-          } catch {}
-        }
+          // Process any remainder in buffer
+          if (buffer.trim().startsWith("data:")) {
+            try {
+              const parsed = JSON.parse(buffer.trim().slice(5).trim());
+              if (parsed.usageMetadata) {
+                promptTokens = parsed.usageMetadata.promptTokenCount ?? promptTokens;
+                completionTokens = parsed.usageMetadata.candidatesTokenCount ?? completionTokens;
+                totalTokens = parsed.usageMetadata.totalTokenCount ?? (promptTokens + completionTokens);
+              }
+            } catch {}
+          }
 
-        // LEVEL 1 AUTO-SYNTHESIS:
-        // If no tool call was emitted, plainText was generated, and SendMessage is an available tool:
-        // Automatically synthesize a SendMessage tool call so Grok Bot delivers it to the user.
-        if (!hasEmittedToolCall && plainText.trim().length > 0 && supportsSendMessage) {
-          const synthId = `call_synth_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
-          const synthArgs = { type: "text", content: plainText.trim() };
-          assistantContentParts.push({
-            type: "tool-call",
-            toolCallId: synthId,
-            toolName: "SendMessage",
-            args: synthArgs,
-          });
-          yield {
-            type: "tool-call" as const,
-            toolCallId: synthId,
-            toolName: "SendMessage",
-            args: synthArgs,
+          // LEVEL 1 AUTO-SYNTHESIS:
+          // If no tool call was emitted, plainText was generated, and SendMessage is an available tool:
+          // Automatically synthesize a SendMessage tool call so Grok Bot delivers it to the user.
+          if (!hasEmittedToolCall && plainText.trim().length > 0 && supportsSendMessage) {
+            const synthId = `call_synth_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+            const synthArgs = { type: "text", content: plainText.trim() };
+            assistantContentParts.push({
+              type: "tool-call",
+              toolCallId: synthId,
+              toolName: "SendMessage",
+              args: synthArgs,
+              thoughtSignature: "skip_thought_signature_validator",
+            });
+            yield {
+              type: "tool-call" as const,
+              toolCallId: synthId,
+              toolName: "SendMessage",
+              args: synthArgs,
+              thoughtSignature: "skip_thought_signature_validator",
+            };
+            hasEmittedToolCall = true;
+          }
+
+          // Build assistant content for final model response
+          const finalContentParts: any[] = [];
+          if (reasoningText.length > 0) {
+            finalContentParts.push({ type: "reasoning", text: reasoningText });
+          }
+          if (plainText.length > 0) {
+            finalContentParts.push({ type: "text", text: plainText });
+          }
+          for (const part of assistantContentParts) {
+            finalContentParts.push(part);
+          }
+
+          const usageRecord: UsageRecord = {
+            inputTokens: promptTokens,
+            outputTokens: completionTokens,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
           };
-          hasEmittedToolCall = true;
-        }
+          options.onUsage?.(usageRecord);
 
-        // Build assistant content for final model response
-        const finalContentParts: any[] = [];
-        if (reasoningText.length > 0) {
-          finalContentParts.push({ type: "reasoning", text: reasoningText });
-        }
-        if (plainText.length > 0) {
-          finalContentParts.push({ type: "text", text: plainText });
-        }
-        for (const part of assistantContentParts) {
-          finalContentParts.push(part);
-        }
+          usage.resolve({
+            promptTokens,
+            completionTokens,
+            totalTokens,
+          });
 
-        const usageRecord: UsageRecord = {
-          inputTokens: promptTokens,
-          outputTokens: completionTokens,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-        };
-        options.onUsage?.(usageRecord);
+          extendedUsage.resolve({
+            inputTokens: promptTokens,
+            outputTokens: completionTokens,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            maxTokens: 0,
+          });
 
-        usage.resolve({
-          promptTokens,
-          completionTokens,
-          totalTokens,
-        });
-
-        extendedUsage.resolve({
-          inputTokens: promptTokens,
-          outputTokens: completionTokens,
-          cacheReadTokens: 0,
-          cacheWriteTokens: 0,
-          maxTokens: 0,
-        });
-
-        metadata.resolve({
-          gemini: {
-            model: actualModelUsed,
-            direct: true,
-          },
-        });
-
-        resultResponse.resolve({
-          id: invocationId,
-          modelId: actualModelUsed,
-          timestamp: new Date(),
-          headers: {},
-          messages: [
-            {
-              role: "assistant",
-              content: finalContentParts,
-              id: invocationId,
+          metadata.resolve({
+            gemini: {
+              model: actualModelUsed,
+              direct: true,
             },
-          ],
-        });
+          });
 
-        streamSucceeded = true;
-        break;
-      } catch (err) {
-        lastError = err;
-        console.warn(`[gemini-native] Attempt with ${model} failed:`, err);
+          resultResponse.resolve({
+            id: invocationId,
+            modelId: actualModelUsed,
+            timestamp: new Date(),
+            headers: {},
+            messages: [
+              {
+                role: "assistant",
+                content: finalContentParts,
+                id: invocationId,
+              },
+            ],
+          });
+
+          streamSucceeded = true;
+          break modelLoop;
+        } catch (err) {
+          lastError = err;
+          if (attempt < 2 && err instanceof Error && (err.message.includes("429") || err.message.includes("503") || err.message.includes("fetch failed"))) {
+            await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+            continue;
+          }
+          console.warn(`[gemini-native] Attempt with ${model} failed:`, err);
+          continue modelLoop;
+        }
       }
     }
 
