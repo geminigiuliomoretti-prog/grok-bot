@@ -101,3 +101,61 @@ test("DualFreeLLMRouter: health-check and router stats", async () => {
   assert.equal(stats.engineAName, "gemini-3.8-flash");
   assert.ok(stats.engineBName.length > 0);
 });
+
+test("DualFreeLLMRouter: guarantees thought_signature and handles tool_use/multi-turn messages", () => {
+  const router = DualFreeLLMRouter.getInstance();
+
+  const messages = [
+    { role: "user", content: "Vorrei che andassi su whatsapp e scrivessi su 'me' la lista della spesa" },
+    {
+      role: "assistant",
+      message: {
+        content: [
+          {
+            type: "tool_use",
+            name: "TodoWrite",
+            input: { todos: [{ id: "t1", content: "Write list" }] }
+          }
+        ]
+      }
+    },
+    {
+      role: "tool",
+      name: "TodoWrite",
+      content: JSON.stringify({ success: true })
+    },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool-call",
+          toolName: "SendMessage",
+          args: { content: "Sto inviando il messaggio...", type: "text" }
+        }
+      ]
+    }
+  ];
+
+  // Call private prepareContents via reflection
+  const contents = router["prepareContents"](messages, false);
+  assert.ok(Array.isArray(contents));
+  assert.ok(contents.length > 0);
+
+  // Check alternating roles
+  for (let i = 0; i < contents.length - 1; i++) {
+    assert.notEqual(contents[i].role, contents[i + 1].role, "Roles must strictly alternate");
+  }
+
+  // Find all functionCall parts across model messages
+  const modelTurns = contents.filter(c => c.role === "model");
+  assert.ok(modelTurns.length > 0);
+
+  for (const turn of modelTurns) {
+    for (const part of turn.parts) {
+      if (part.functionCall) {
+        assert.ok(typeof part.thoughtSignature === "string" && part.thoughtSignature.length > 20, "thoughtSignature must be present and valid");
+        assert.ok(typeof part.thought_signature === "string" && part.thought_signature.length > 20, "thought_signature must be present and valid");
+      }
+    }
+  }
+});

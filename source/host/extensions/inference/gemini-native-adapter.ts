@@ -156,17 +156,21 @@ export function convertMessagesToGeminiContents(
 
   for (const msg of messages) {
     if (msg.role === "system") {
-      const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+      const raw = msg.content ?? msg.message?.content;
+      const text = typeof raw === "string" ? raw : JSON.stringify(raw);
       if (text.trim().length > 0) systemTexts.push(text.trim());
       continue;
     }
 
+    const rawContent = msg.content ?? msg.message?.content;
+
     if (msg.role === "user") {
       const parts: any[] = [];
-      if (typeof msg.content === "string") {
-        if (msg.content.length > 0) parts.push({ text: msg.content });
-      } else if (Array.isArray(msg.content)) {
-        for (const part of msg.content) {
+      if (typeof rawContent === "string") {
+        if (rawContent.length > 0) parts.push({ text: rawContent });
+      } else if (Array.isArray(rawContent)) {
+        for (const part of rawContent) {
+          if (!part) continue;
           if (part.type === "text" && typeof part.text === "string") {
             parts.push({ text: part.text });
           } else if (part.type === "image" && part.image) {
@@ -179,51 +183,65 @@ export function convertMessagesToGeminiContents(
       continue;
     }
 
-    if (msg.role === "assistant") {
+    if (msg.role === "assistant" || msg.role === "model") {
       const parts: any[] = [];
-      if (typeof msg.content === "string") {
-        if (msg.content.length > 0) parts.push({ text: msg.content });
-      } else if (Array.isArray(msg.content)) {
-        for (const part of msg.content) {
+      if (typeof rawContent === "string") {
+        if (rawContent.length > 0) parts.push({ text: rawContent });
+      } else if (Array.isArray(rawContent)) {
+        for (const part of rawContent) {
           if (!part) continue;
           if (part.type === "text" && typeof part.text === "string" && part.text.length > 0) {
             parts.push({ text: part.text });
-          } else if (part.type === "tool-call" || part.type === "toolCall" || part.type === "tool_call" || part.toolName) {
-            const args = typeof part.args === "string" ? JSON.parse(part.args) : (part.args ?? {});
-            const thoughtSig = part.thoughtSignature ?? part.thought_signature;
+          } else if (
+            part.type === "tool-call" ||
+            part.type === "toolCall" ||
+            part.type === "tool_call" ||
+            part.type === "tool_use" ||
+            part.toolName ||
+            (part.name && part.type !== "text")
+          ) {
+            const rawArgs = part.args ?? part.input ?? {};
+            const args = typeof rawArgs === "string" ? JSON.parse(rawArgs) : rawArgs;
+            const toolCallId = part.toolCallId || part.id;
+            const toolName = part.toolName || part.name;
+            const thoughtSig = resolveThoughtSignature(part.thoughtSignature ?? part.thought_signature);
             const partObj: Record<string, any> = {
               functionCall: {
-                name: part.toolName || part.name,
+                name: toolName,
                 args,
-                ...(part.toolCallId || part.id ? { id: part.toolCallId || part.id } : {}),
+                ...(toolCallId ? { id: toolCallId } : {}),
               },
-              thoughtSignature: resolveThoughtSignature(thoughtSig),
+              thoughtSignature: thoughtSig,
+              thought_signature: thoughtSig,
             };
             parts.push(partObj);
           } else if (part.functionCall || part.function_call) {
             const fn = part.functionCall || part.function_call;
-            const thoughtSig = part.thoughtSignature ?? part.thought_signature;
+            const thoughtSig = resolveThoughtSignature(part.thoughtSignature ?? part.thought_signature ?? fn.thoughtSignature ?? fn.thought_signature);
             const partObj: Record<string, any> = {
               functionCall: fn,
-              thoughtSignature: resolveThoughtSignature(thoughtSig),
+              thoughtSignature: thoughtSig,
+              thought_signature: thoughtSig,
             };
             parts.push(partObj);
           }
         }
       }
-      const extraToolCalls = (msg as any).tool_calls || (msg as any).toolCalls;
+      const extraToolCalls = (msg as any).tool_calls || (msg as any).toolCalls || (msg as any).message?.tool_calls;
       if (Array.isArray(extraToolCalls)) {
         for (const tc of extraToolCalls) {
           const fn = tc.function || tc;
-          const args = typeof fn.arguments === "string" ? JSON.parse(fn.arguments) : (fn.args ?? {});
-          const thoughtSig = tc.thoughtSignature ?? tc.thought_signature;
+          const rawArgs = fn.arguments ?? fn.args ?? tc.args ?? {};
+          const args = typeof rawArgs === "string" ? JSON.parse(rawArgs) : rawArgs;
+          const thoughtSig = resolveThoughtSignature(tc.thoughtSignature ?? tc.thought_signature ?? fn.thoughtSignature ?? fn.thought_signature);
           const partObj: Record<string, any> = {
             functionCall: {
-              name: fn.name,
+              name: fn.name || tc.name,
               args,
               ...(tc.id ? { id: tc.id } : {}),
             },
-            thoughtSignature: resolveThoughtSignature(thoughtSig),
+            thoughtSignature: thoughtSig,
+            thought_signature: thoughtSig,
           };
           parts.push(partObj);
         }
@@ -235,14 +253,15 @@ export function convertMessagesToGeminiContents(
 
     if (msg.role === "tool") {
       const parts: any[] = [];
-      if (Array.isArray(msg.content)) {
-        for (const item of msg.content) {
-          if (item.type === "tool-result") {
+      if (Array.isArray(rawContent)) {
+        for (const item of rawContent) {
+          if (!item) continue;
+          if (item.type === "tool-result" || item.type === "tool_result") {
             const toolCallId = item.toolCallId || item.id;
             parts.push({
               functionResponse: {
                 name: item.toolName || item.name || "tool",
-                response: { output: item.result ?? item.output ?? "" },
+                response: { output: item.result ?? item.output ?? item.content ?? "" },
                 ...(toolCallId ? { id: toolCallId } : {}),
               },
             });
@@ -252,7 +271,7 @@ export function convertMessagesToGeminiContents(
         parts.push({
           functionResponse: {
             name: msg.name || msg.id || "tool",
-            response: { output: msg.content ?? "" },
+            response: { output: rawContent ?? "" },
             ...(msg.toolCallId ? { id: msg.toolCallId } : {}),
           },
         });

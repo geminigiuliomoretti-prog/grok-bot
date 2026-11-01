@@ -128,16 +128,18 @@ export class DualFreeLLMRouter {
       const isLatestTurn = idx >= len - 2;
       if (isLatestTurn) return msg;
 
-      if (msg.role === "assistant") {
-        if (typeof msg.content === "string") {
-          const cleaned = msg.content
+      const role = msg.role;
+      if (role === "assistant" || role === "model") {
+        const rawContent = msg.content ?? msg.message?.content;
+        if (typeof rawContent === "string") {
+          const cleaned = rawContent
             .replace(/<\|channel>thought[\s\S]*?<\|channel>text/g, "")
             .replace(/<thought>[\s\S]*?<\/thought>/gi, "")
             .trim();
           return { ...msg, content: cleaned || " " };
         }
-        if (Array.isArray(msg.content)) {
-          const cleanedParts = msg.content.filter((part: any) => part.type !== "reasoning" && part.thought !== true);
+        if (Array.isArray(rawContent)) {
+          const cleanedParts = rawContent.filter((part: any) => part.type !== "reasoning" && part.thought !== true);
           return { ...msg, content: cleanedParts.length > 0 ? cleanedParts : [{ type: "text", text: " " }] };
         }
       }
@@ -148,23 +150,35 @@ export class DualFreeLLMRouter {
   /**
    * Prepares contents with Gemma-specific Multimodal Ordering:
    * Image blocks MUST precede Text blocks for maximum spatial precision.
+   * Ensures STRICT alternating roles and guarantees thoughtSignature on every functionCall part.
    */
   private prepareContents(messages: readonly any[], isGemma: boolean): any[] {
     const cleaned = this.cleanHistoricalThoughts(messages);
-    const contents: any[] = [];
+    const rawContents: any[] = [];
     let lastSeenThoughtSig = DEFAULT_SEED_THOUGHT_SIGNATURE;
+
+    const resolveThoughtSig = (sig?: unknown): string => {
+      if (typeof sig === "string" && sig.length > 20 && sig !== "skip_thought_signature_validator") {
+        lastSeenThoughtSig = sig;
+        return sig;
+      }
+      return lastSeenThoughtSig;
+    };
 
     for (const msg of cleaned) {
       if (msg.role === "system") continue;
+
+      const rawContent = msg.content ?? msg.message?.content;
 
       if (msg.role === "user") {
         const imageParts: any[] = [];
         const textParts: any[] = [];
 
-        if (typeof msg.content === "string") {
-          textParts.push({ text: msg.content || " " });
-        } else if (Array.isArray(msg.content)) {
-          for (const part of msg.content) {
+        if (typeof rawContent === "string") {
+          textParts.push({ text: rawContent || " " });
+        } else if (Array.isArray(rawContent)) {
+          for (const part of rawContent) {
+            if (!part) continue;
             if (part.type === "image" && part.image) {
               const prep = this.normalizer.prepareScreenshotPayload(part.image);
               imageParts.push({
@@ -185,55 +199,88 @@ export class DualFreeLLMRouter {
           : [...textParts, ...imageParts];
 
         if (parts.length === 0) parts.push({ text: " " });
-        contents.push({ role: "user", parts });
+        rawContents.push({ role: "user", parts });
         continue;
       }
 
       if (msg.role === "assistant" || msg.role === "model") {
         const parts: any[] = [];
-        if (typeof msg.content === "string") {
-          if (msg.content.trim().length > 0) parts.push({ text: msg.content.trim() });
-        } else if (Array.isArray(msg.content)) {
-          for (const part of msg.content) {
+        if (typeof rawContent === "string") {
+          if (rawContent.trim().length > 0) parts.push({ text: rawContent.trim() });
+        } else if (Array.isArray(rawContent)) {
+          for (const part of rawContent) {
             if (!part) continue;
             if (part.type === "text" && typeof part.text === "string" && part.text.length > 0) {
               parts.push({ text: part.text });
-            } else if (part.type === "tool-call" || part.type === "toolCall" || part.toolName) {
-              const sig = part.thoughtSignature || part.thought_signature;
-              if (sig && typeof sig === "string" && sig.length > 20) lastSeenThoughtSig = sig;
+            } else if (
+              part.type === "tool-call" ||
+              part.type === "toolCall" ||
+              part.type === "tool_call" ||
+              part.type === "tool_use" ||
+              part.toolName ||
+              (part.name && part.type !== "text")
+            ) {
+              const toolName = part.toolName || part.name;
+              const rawArgs = part.args ?? part.input ?? {};
+              const args = typeof rawArgs === "string" ? JSON.parse(rawArgs) : rawArgs;
+              const toolCallId = part.toolCallId || part.id;
+              const sig = resolveThoughtSig(part.thoughtSignature ?? part.thought_signature);
               parts.push({
                 functionCall: {
-                  name: part.toolName || part.name,
-                  args: typeof part.args === "string" ? JSON.parse(part.args) : (part.args ?? {}),
-                  ...(part.toolCallId || part.id ? { id: part.toolCallId || part.id } : {}),
+                  name: toolName,
+                  args,
+                  ...(toolCallId ? { id: toolCallId } : {}),
                 },
-                thoughtSignature: lastSeenThoughtSig,
+                thoughtSignature: sig,
+                thought_signature: sig,
               });
-            } else if (part.functionCall) {
-              const sig = part.thoughtSignature || part.thought_signature;
-              if (sig && typeof sig === "string" && sig.length > 20) lastSeenThoughtSig = sig;
+            } else if (part.functionCall || part.function_call) {
+              const fn = part.functionCall || part.function_call;
+              const sig = resolveThoughtSig(part.thoughtSignature ?? part.thought_signature ?? fn.thoughtSignature ?? fn.thought_signature);
               parts.push({
-                functionCall: part.functionCall,
-                thoughtSignature: lastSeenThoughtSig,
+                functionCall: fn,
+                thoughtSignature: sig,
+                thought_signature: sig,
               });
             }
           }
         }
+
+        const extraToolCalls = (msg as any).tool_calls || (msg as any).toolCalls || (msg as any).message?.tool_calls;
+        if (Array.isArray(extraToolCalls)) {
+          for (const tc of extraToolCalls) {
+            const fn = tc.function || tc;
+            const rawArgs = fn.arguments ?? fn.args ?? tc.args ?? {};
+            const args = typeof rawArgs === "string" ? JSON.parse(rawArgs) : rawArgs;
+            const sig = resolveThoughtSig(tc.thoughtSignature ?? tc.thought_signature ?? fn.thoughtSignature ?? fn.thought_signature);
+            parts.push({
+              functionCall: {
+                name: fn.name || tc.name,
+                args,
+                ...(tc.id ? { id: tc.id } : {}),
+              },
+              thoughtSignature: sig,
+              thought_signature: sig,
+            });
+          }
+        }
+
         if (parts.length === 0) parts.push({ text: " " });
-        contents.push({ role: "model", parts });
+        rawContents.push({ role: "model", parts });
         continue;
       }
 
       if (msg.role === "tool") {
         const parts: any[] = [];
-        if (Array.isArray(msg.content)) {
-          for (const item of msg.content) {
-            if (item.type === "tool-result") {
+        if (Array.isArray(rawContent)) {
+          for (const item of rawContent) {
+            if (!item) continue;
+            if (item.type === "tool-result" || item.type === "tool_result") {
               parts.push({
                 functionResponse: {
                   name: item.toolName || item.name || "tool",
-                  response: { output: item.result ?? item.output ?? "" },
-                  ...(item.toolCallId ? { id: item.toolCallId } : {}),
+                  response: { output: item.result ?? item.output ?? item.content ?? "" },
+                  ...(item.toolCallId || item.id ? { id: item.toolCallId || item.id } : {}),
                 },
               });
             }
@@ -242,12 +289,29 @@ export class DualFreeLLMRouter {
           parts.push({
             functionResponse: {
               name: msg.name || msg.id || "tool",
-              response: { output: msg.content ?? "" },
+              response: { output: rawContent ?? "" },
+              ...(msg.toolCallId ? { id: msg.toolCallId } : {}),
             },
           });
         }
-        if (parts.length > 0) contents.push({ role: "user", parts });
+        if (parts.length > 0) rawContents.push({ role: "user", parts });
       }
+    }
+
+    // Merge consecutive matching roles to comply strictly with Gemini/Gemma alternating turn requirements
+    const contents: any[] = [];
+    for (const item of rawContents) {
+      const prev = contents.at(-1);
+      if (prev && prev.role === item.role) {
+        prev.parts.push(...item.parts);
+      } else {
+        contents.push({ role: item.role, parts: [...item.parts] });
+      }
+    }
+
+    // Ensure conversation starts with user turn
+    if (contents.length > 0 && contents[0].role === "model") {
+      contents.unshift({ role: "user", parts: [{ text: "Hello" }] });
     }
 
     return contents;
@@ -422,7 +486,8 @@ export class DualFreeLLMRouter {
     metadata: ReturnType<typeof deferred<Record<string, unknown>>>,
     resultResponse: ReturnType<typeof deferred<any>>,
   ): AsyncGenerator<StreamChunk> {
-    const apiKey = this.keyPool.getNextKey();
+    const apiKey = this.keyPool.getNextKey() || options.apiKey;
+    if (!apiKey) throw new Error("No Gemini API key available in key pool or environment.");
     const isGemma = this.engineBModel.toLowerCase().includes("gemma");
 
     const contents = this.prepareContents(options.messages, isGemma);

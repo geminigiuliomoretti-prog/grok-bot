@@ -4,19 +4,33 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 async function main() {
-  const outfile = join(tmpdir(), "dual-router-bundle.mjs");
+  const outfileA = join(tmpdir(), "dual-router-bundle.mjs");
   await build({
     entryPoints: ["tests/dual-router.test.mjs"],
     bundle: true,
     platform: "node",
     format: "esm",
-    outfile,
+    outfile: outfileA,
+    packages: "external",
+  });
+
+  const outfileB = join(tmpdir(), "gemini-native-bundle.mjs");
+  await build({
+    entryPoints: ["tests/gemini-native-adapter.test.mjs"],
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    outfile: outfileB,
     packages: "external",
   });
 
   console.log("Running Dual-Engine test suite with node --test...");
-  const output = execSync(`node --test "${outfile}"`, { encoding: "utf8" });
-  console.log(output);
+  const outputA = execSync(`node --test "${outfileA}"`, { encoding: "utf8" });
+  console.log(outputA);
+
+  console.log("Running Gemini-Native test suite with node --test...");
+  const outputB = execSync(`node --test "${outfileB}"`, { encoding: "utf8" });
+  console.log(outputB);
 }
 
 main().catch((err) => {

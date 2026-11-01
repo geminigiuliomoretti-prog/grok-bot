@@ -42,11 +42,45 @@ export class ApiKeyPool {
   }
 
   private resolveKeysFromEnvironment(): string[] {
-    const rawKeys =
+    let rawKeys =
       process.env.GEMINI_FREE_API_KEYS?.trim() ||
       process.env.GEMINI_API_KEYS?.trim() ||
       process.env.GEMINI_API_KEY?.trim() ||
       "";
+
+    if (!rawKeys) {
+      try {
+        const { homedir } = require("node:os");
+        const { join } = require("node:path");
+        const { existsSync, readFileSync } = require("node:fs");
+        const candidates = [
+          join(process.cwd(), ".env"),
+          join(homedir(), ".grokbot", ".env"),
+          join(homedir(), ".cursor", ".env"),
+        ];
+        for (const candidate of candidates) {
+          if (!existsSync(candidate)) continue;
+          const content = readFileSync(candidate, "utf8");
+          for (const line of content.split(/\r?\n/)) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("#")) continue;
+            const eq = trimmed.indexOf("=");
+            if (eq > 0) {
+              const key = trimmed.slice(0, eq).trim();
+              let val = trimmed.slice(eq + 1).trim();
+              if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                val = val.slice(1, -1);
+              }
+              if ((key === "GEMINI_FREE_API_KEYS" || key === "GEMINI_API_KEYS" || key === "GEMINI_API_KEY") && val) {
+                rawKeys = val;
+                break;
+              }
+            }
+          }
+          if (rawKeys) break;
+        }
+      } catch {}
+    }
 
     if (!rawKeys) return [];
 
