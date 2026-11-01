@@ -523,13 +523,23 @@ export class DualFreeLLMRouter {
       }];
     }
 
-    // Candidate models with resilient multi-tier fallback
-    const candidateModels = [
-      this.engineBModel,
-      "gemini-3.1-flash-lite",
-      "gemini-flash-lite-latest",
-      "gemini-3.5-flash-lite",
-    ];
+    const hasTools = Boolean(options.definitions && options.definitions.length > 0);
+    // Candidate models with resilient multi-tier fallback.
+    // Note: Gemma models on Google Generative Language API do not support tool/function declarations;
+    // for tool-calling turns, prioritize Gemini Flash Lite models.
+    const candidateModels = hasTools
+      ? [
+          "gemini-3.1-flash-lite",
+          "gemini-flash-lite-latest",
+          "gemini-3.5-flash-lite",
+          "gemini-2.5-flash-lite",
+        ]
+      : [
+          this.engineBModel,
+          "gemini-3.1-flash-lite",
+          "gemini-flash-lite-latest",
+          "gemini-3.5-flash-lite",
+        ];
     let lastError: unknown;
 
     modelLoop: for (const model of candidateModels) {
@@ -550,9 +560,14 @@ export class DualFreeLLMRouter {
             const errText = await res.text().catch(() => "");
             if (res.status === 429) {
               this.keyPool.recordRateLimit(activeKey);
-              console.warn(`[DualFreeLLMRouter] Key rate limited (429) on model ${model}. Rotating key.`);
+              console.warn(`[DualFreeLLMRouter] Key rate limited (429) on model ${model}. Rotating key/model.`);
               lastError = new Error(`Engine B Key Rate Limited (429): ${errText}`);
-              continue; // try next key in pool
+              const poolStatus = this.keyPool.getStatus();
+              if (poolStatus.availableKeys > 0) {
+                continue; // try next key in pool
+              } else {
+                continue modelLoop; // all keys exhausted on this model, rotate to next model candidate
+              }
             }
             if (res.status === 404 || res.status >= 500) {
               console.warn(`[DualFreeLLMRouter] Model ${model} returned ${res.status}. Rotating to next candidate model.`);

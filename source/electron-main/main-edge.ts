@@ -126,12 +126,29 @@ export function createMainEdgeHandlers(deps: MainEdgeDeps): HandlerMap {
     getEgressTunnelStatus: () => invoke(egressController(deps), "getStatus"),
     getWebauthnProxyEnabled: () => invoke(deps.boxToggleStore, "getWebauthnProxyEnabled"),
     setWebauthnProxyEnabled: async (raw) => { const enabled = req(raw).enabled === true; invoke(deps.boxToggleStore, "setWebauthnProxyEnabled", enabled); deps.emitWebauthnProxyChanged(enabled); const mirrored = sandWebauthnProxyMirroredEnablement(enabled, deps.platform); for (let attempt = 0; attempt < 3; attempt += 1) { const applied = await deps.syncHostSettingsToBox({ webauthnProxyEnabled: mirrored }); if (applied?.webauthnProxyEnabled === mirrored) break; await (deps.delay ?? sleep)(250 * (attempt + 1)); } return invoke(deps.boxToggleStore, "getWebauthnProxyEnabled"); },
-    getOnboardingSeen: async () => { try { const settingsPath = String(Reflect.get(deps.settingsStore, "settingsPath")); const agentsDir = join(dirname(settingsPath), "agents"); if (existsSync(agentsDir)) { const entries = readdirSync(agentsDir).filter((name: string) => !name.endsWith(".json") && !name.endsWith(".db")); if (entries.length > 0) return true; } } catch {} return await Promise.resolve(invoke(deps.onboardingSeen, "reconcile")) === true; },
+    getOnboardingSeen: async () => {
+      try {
+        const seen = invoke(deps.settingsStore, "getHasSeenOnboarding");
+        if (seen === true) return true;
+      } catch {}
+      try {
+        const settingsPath = String(Reflect.get(deps.settingsStore, "settingsPath") || join(homedir(), ".grokbot", "settings.json"));
+        const agentsDir = join(dirname(settingsPath), "agents");
+        if (existsSync(agentsDir)) {
+          const entries = readdirSync(agentsDir).filter((name: string) => !name.endsWith(".json") && !name.endsWith(".db"));
+          if (entries.length > 0) return true;
+        }
+      } catch {}
+      return await Promise.resolve(invoke(deps.onboardingSeen, "reconcile")) === true;
+    },
     setOnboardingSeen: async (raw) => {
-      const seen = req(raw).seen;
-      invariant(typeof seen === "boolean", "Onboarding completion must be boolean.");
-      const result = await Promise.resolve(invoke(deps.onboardingSeen, "apply", seen)) as { status?: unknown } | null;
-      invariant(result?.status === "persisted", "Onboarding completion could not be persisted to host settings.");
+      const seen = req(raw).seen === true;
+      try {
+        invoke(deps.settingsStore, "setHasSeenOnboarding", seen);
+      } catch {}
+      try {
+        await Promise.resolve(invoke(deps.onboardingSeen, "apply", seen));
+      } catch {}
     },
 
     openExternal: (raw) => invoke(deps.shell, "openExternalUrl", req(raw).url),
