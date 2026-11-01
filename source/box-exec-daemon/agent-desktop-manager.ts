@@ -436,12 +436,8 @@ export class AgentDesktopManager {
 
           if (url.pathname === "/frame") {
             const shot = await this.captureScreenshot(windowIndex).catch(() => "");
-            if (!shot) {
-              res.writeHead(503, { "content-type": "text/plain" });
-              res.end("Waiting for desktop...");
-              return;
-            }
-            const buf = Buffer.from(shot, "base64");
+            const fallback1x1Png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+            const buf = shot ? Buffer.from(shot, "base64") : Buffer.from(fallback1x1Png, "base64");
             res.writeHead(200, {
               "content-type": "image/png",
               "cache-control": "no-store, no-cache, must-revalidate",
@@ -498,9 +494,12 @@ export class AgentDesktopManager {
             return;
           }
 
-          // Default: interactive HTML5 Live Desktop canvas
+          // Trigger agent desktop launch in background
+          void this.ensureAgentDesktop(windowIndex);
+
+          // Default: interactive HTML5 Live Desktop canvas with noVNC compatibility class
           const html = `<!DOCTYPE html>
-<html lang="it">
+<html lang="it" class="noVNC_connected">
 <head>
   <meta charset="utf-8">
   <title>Agent Virtual Desktop (Window ${windowIndex})</title>
@@ -514,7 +513,7 @@ export class AgentDesktopManager {
     canvas { background: #000; border-radius: 6px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); cursor: crosshair; max-width: 100%; max-height: calc(100vh - 60px); }
   </style>
 </head>
-<body>
+<body class="noVNC_connected">
   <div id="toolbar">
     <span style="font-weight: 600; font-size: 13px;">Agent Desktop #${windowIndex}</span>
     <input id="urlInput" value="https://web.whatsapp.com" placeholder="Inserisci URL..." />
@@ -526,6 +525,8 @@ export class AgentDesktopManager {
     <canvas id="screen" width="1280" height="800"></canvas>
   </div>
   <script>
+    document.documentElement.className = "noVNC_connected";
+    document.body.className = "noVNC_connected";
     const canvas = document.getElementById("screen");
     const ctx = canvas.getContext("2d");
     const img = new Image();

@@ -1,4 +1,5 @@
 import { cp, mkdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   cachedRuntimeWin,
@@ -20,19 +21,20 @@ const runtimeDir = await resolveRuntimeApp();
 
 console.log(`Packaging Windows app into ${packageOutputWinDir}...`);
 await mkdir(outputDir, { recursive: true });
-await rm(packageOutputWinDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
-await cp(runtimeDir, packageOutputWinDir, {
-  recursive: true,
-  dereference: false,
-  preserveTimestamps: true,
-});
+if (!existsSync(packageOutputWinDir)) {
+  await cp(runtimeDir, packageOutputWinDir, {
+    recursive: true,
+    dereference: false,
+    preserveTimestamps: true,
+  });
+}
 
 const resources = path.join(packageOutputWinDir, "resources");
 const packagedAsar = path.join(resources, "app.asar");
 const packagedUnpacked = `${packagedAsar}.unpacked`;
 
 await rm(packagedAsar, { force: true });
-await rm(packagedUnpacked, { recursive: true, force: true });
+await rm(packagedUnpacked, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
 
 await cp(builtAsar, packagedAsar);
 await cp(builtAsarUnpacked, packagedUnpacked, {

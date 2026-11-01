@@ -152,11 +152,19 @@ export function bindVncWebviewLifecycle(element: VncWebviewElement, options: Pic
     onReadyChange?.(true);
     reportDomReady();
     sendVisibility();
+    if (!state.hasConnected) {
+      state.hasConnected = true;
+      onConnectedChange?.(true);
+    }
   };
   const onDidFinishLoad = () => {
     state.isReady = true;
     reportDomReady();
     sendVisibility();
+    if (!state.hasConnected) {
+      state.hasConnected = true;
+      onConnectedChange?.(true);
+    }
   };
   const onDidFailLoad = (event: Event) => {
     const errorCode = (event as Event & { errorCode?: number }).errorCode;

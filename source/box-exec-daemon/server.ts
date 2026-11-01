@@ -523,6 +523,11 @@ export async function startBoxExecDaemon(options: BoxExecDaemonOptions): Promise
     server.listen(port, host, () => { server.off("error", reject); readyState = true; resolve(); });
   });
   await ready;
+  try {
+    AgentDesktopManager.getInstance();
+  } catch (e) {
+    console.warn("[box-exec-daemon] AgentDesktopManager startup error:", e);
+  }
   const address = server.address();
   if (address == null || typeof address === "string") throw new Error("Box exec daemon did not expose a TCP address");
   let stopped = false;

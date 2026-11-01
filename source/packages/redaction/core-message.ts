@@ -109,13 +109,15 @@ class RedactedToolCallPart {
   readonly toolName: unknown;
   readonly args: RedactedString;
   readonly providerOptions: ProviderOptions;
+  readonly thoughtSignature?: string | undefined;
 
-  constructor(params: { toolCallId: unknown; toolName: unknown; args: RedactedString; providerOptions: ProviderOptions }) {
+  constructor(params: { toolCallId: unknown; toolName: unknown; args: RedactedString; providerOptions: ProviderOptions; thoughtSignature?: string | undefined }) {
     this.type = "tool-call";
     this.toolCallId = params.toolCallId;
     this.toolName = params.toolName;
     this.args = params.args;
     this.providerOptions = params.providerOptions;
+    this.thoughtSignature = params.thoughtSignature;
   }
 
   toString(): string { return String(this.args); }
@@ -281,6 +283,7 @@ function toRedactedAssistantContentPart(part: ContentPart, context: PrivacyConte
         toolName: part.toolName,
         args: createRedactedString(JSON.stringify(part.args) as string, DataClassification.CODE, "tool_call_args", context),
         providerOptions: part.providerOptions,
+        thoughtSignature: (part as any).thoughtSignature ?? (part as any).thought_signature,
       });
     default:
       return new RedactedUnknownPart(
@@ -399,6 +402,7 @@ function fromRedactedAssistantContentPart(part: ContentPart, purpose: PrivacyCap
       return Object.assign(
         { type: "tool-call", toolCallId: part.toolCallId, toolName: part.toolName, args },
         part.providerOptions !== undefined && { providerOptions: part.providerOptions },
+        (part as any).thoughtSignature !== undefined && { thoughtSignature: (part as any).thoughtSignature },
       );
     }
     case "unknown": {

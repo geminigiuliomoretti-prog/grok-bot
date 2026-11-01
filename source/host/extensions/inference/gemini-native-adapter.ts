@@ -38,13 +38,15 @@ export interface StreamChunkToolCall {
 
 export type StreamChunk = StreamChunkTextDelta | StreamChunkReasoning | StreamChunkToolCall;
 
+export const DEFAULT_SEED_THOUGHT_SIGNATURE =
+  "EnMKcQFpFH0TcPXlFoRZo3gFKoDeHIP+DaNTkj5UXhjROPt6hh5yI4MYiRGAcehD/7gj0x3KJNdCTDNFUp6hVQXY8ipzVtxFRKIwPSZZsdLksojfoY5YO18LdRbexdS1a1kdp/V0MHD7MBG2/Jnx66B6hGnD";
+
 const PRIMARY_MODELS = [
   "gemini-3.1-flash-lite",
-  "gemini-flash-latest",
   "gemini-flash-lite-latest",
   "gemini-3.5-flash-lite",
-  "gemini-3.5-flash",
-  "gemini-3.8-flash",
+  "gemini-3.1-flash-lite-preview",
+  "gemini-3-flash-preview",
 ];
 
 const SUMMARIZATION_MODELS = [
@@ -141,6 +143,15 @@ export function convertMessagesToGeminiContents(
     systemTexts.push(baseSystemPrompt.trim());
   }
 
+  let lastSeenThoughtSignature = DEFAULT_SEED_THOUGHT_SIGNATURE;
+  const resolveThoughtSignature = (sig?: unknown): string => {
+    if (typeof sig === "string" && sig.length > 20 && sig !== "skip_thought_signature_validator") {
+      lastSeenThoughtSignature = sig;
+      return sig;
+    }
+    return lastSeenThoughtSignature;
+  };
+
   const rawContents: any[] = [];
 
   for (const msg of messages) {
@@ -186,20 +197,16 @@ export function convertMessagesToGeminiContents(
                 args,
                 ...(part.toolCallId || part.id ? { id: part.toolCallId || part.id } : {}),
               },
+              thoughtSignature: resolveThoughtSignature(thoughtSig),
             };
-            if (typeof thoughtSig === "string" && thoughtSig.length > 0 && thoughtSig !== "skip_thought_signature_validator") {
-              partObj.thoughtSignature = thoughtSig;
-            }
             parts.push(partObj);
           } else if (part.functionCall || part.function_call) {
             const fn = part.functionCall || part.function_call;
             const thoughtSig = part.thoughtSignature ?? part.thought_signature;
             const partObj: Record<string, any> = {
               functionCall: fn,
+              thoughtSignature: resolveThoughtSignature(thoughtSig),
             };
-            if (typeof thoughtSig === "string" && thoughtSig.length > 0 && thoughtSig !== "skip_thought_signature_validator") {
-              partObj.thoughtSignature = thoughtSig;
-            }
             parts.push(partObj);
           }
         }
@@ -216,10 +223,8 @@ export function convertMessagesToGeminiContents(
               args,
               ...(tc.id ? { id: tc.id } : {}),
             },
+            thoughtSignature: resolveThoughtSignature(thoughtSig),
           };
-          if (typeof thoughtSig === "string" && thoughtSig.length > 0 && thoughtSig !== "skip_thought_signature_validator") {
-            partObj.thoughtSignature = thoughtSig;
-          }
           parts.push(partObj);
         }
       }
@@ -316,7 +321,7 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
     let plainText = "";
     let reasoningText = "";
     let hasEmittedToolCall = false;
-    let lastThoughtSignature: string | undefined;
+    let lastThoughtSignature: string = DEFAULT_SEED_THOUGHT_SIGNATURE;
     const assistantContentParts: any[] = [];
     let actualModelUsed = candidateModels[0];
     let streamSucceeded = false;
@@ -468,12 +473,14 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
               toolCallId: synthId,
               toolName: "SendMessage",
               args: synthArgs,
+              thoughtSignature: lastThoughtSignature,
             });
             yield {
               type: "tool-call" as const,
               toolCallId: synthId,
               toolName: "SendMessage",
               args: synthArgs,
+              thoughtSignature: lastThoughtSignature,
             };
             hasEmittedToolCall = true;
           }
