@@ -1,4 +1,5 @@
 import { executeGeminiNativeStream } from "./gemini-native-adapter.js";
+import { DualFreeLLMRouter } from "./dual-free-llm-router.js";
 import { existsSync, lstatSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -303,7 +304,7 @@ function geminiExecutor(
   onUsage?: (usage: UsageRecord) => void,
   isSummarization?: boolean,
 ) {
-  return executeGeminiNativeStream({
+  return DualFreeLLMRouter.getInstance().executeRoutedStream({
     apiKey: geminiCredential(),
     messages,
     systemPrompt: GROK_ROUTER_SYSTEM_PROMPT,
