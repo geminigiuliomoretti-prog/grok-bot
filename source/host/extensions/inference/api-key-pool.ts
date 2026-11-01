@@ -53,31 +53,49 @@ export class ApiKeyPool {
         const { homedir } = require("node:os");
         const { join } = require("node:path");
         const { existsSync, readFileSync } = require("node:fs");
-        const candidates = [
-          join(process.cwd(), ".env"),
-          join(homedir(), ".grokbot", ".env"),
-          join(homedir(), ".cursor", ".env"),
-        ];
-        for (const candidate of candidates) {
-          if (!existsSync(candidate)) continue;
-          const content = readFileSync(candidate, "utf8");
-          for (const line of content.split(/\r?\n/)) {
-            const trimmed = line.trim();
-            if (!trimmed || trimmed.startsWith("#")) continue;
-            const eq = trimmed.indexOf("=");
-            if (eq > 0) {
-              const key = trimmed.slice(0, eq).trim();
-              let val = trimmed.slice(eq + 1).trim();
-              if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-                val = val.slice(1, -1);
-              }
-              if ((key === "GEMINI_FREE_API_KEYS" || key === "GEMINI_API_KEYS" || key === "GEMINI_API_KEY") && val) {
-                rawKeys = val;
-                break;
+
+        // Check box-secrets.json
+        const boxSecretsPath = join(homedir(), ".grokbot", "box-secrets.json");
+        if (existsSync(boxSecretsPath)) {
+          try {
+            const parsed = JSON.parse(readFileSync(boxSecretsPath, "utf8"));
+            const s = parsed?.secrets;
+            if (s && typeof s === "object") {
+              const val = s.GEMINI_FREE_API_KEYS || s.GEMINI_API_KEYS || s.GEMINI_API_KEY;
+              if (typeof val === "string" && val.trim().length > 0) {
+                rawKeys = val.trim();
               }
             }
+          } catch {}
+        }
+
+        if (!rawKeys) {
+          const candidates = [
+            join(process.cwd(), ".env"),
+            join(homedir(), ".grokbot", ".env"),
+            join(homedir(), ".cursor", ".env"),
+          ];
+          for (const candidate of candidates) {
+            if (!existsSync(candidate)) continue;
+            const content = readFileSync(candidate, "utf8");
+            for (const line of content.split(/\r?\n/)) {
+              const trimmed = line.trim();
+              if (!trimmed || trimmed.startsWith("#")) continue;
+              const eq = trimmed.indexOf("=");
+              if (eq > 0) {
+                const key = trimmed.slice(0, eq).trim();
+                let val = trimmed.slice(eq + 1).trim();
+                if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+                  val = val.slice(1, -1);
+                }
+                if ((key === "GEMINI_FREE_API_KEYS" || key === "GEMINI_API_KEYS" || key === "GEMINI_API_KEY") && val) {
+                  rawKeys = val;
+                  break;
+                }
+              }
+            }
+            if (rawKeys) break;
           }
-          if (rawKeys) break;
         }
       } catch {}
     }

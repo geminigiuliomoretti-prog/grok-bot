@@ -374,7 +374,7 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
 
           if (!res.ok) {
             const errText = await res.text().catch(() => "");
-            if (res.status === 429 || res.status === 503) {
+            if (res.status === 429 || res.status >= 500) {
               console.warn(`[gemini-native] Model ${model} returned ${res.status}. Rotating immediately to next candidate model.`);
               lastError = new Error(`Model ${model} returned ${res.status}: ${errText}`);
               continue modelLoop;

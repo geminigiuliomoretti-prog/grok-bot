@@ -80,7 +80,13 @@ export function createElectronProductionMainRpcBinding(
           store.setInferenceProvider("gemini");
           const settingsPath = String(Reflect.get(store, "settingsPath"));
           if (trimmed.length > 0) {
-            await context.secretsStores.userSecretsStore.upsert({ GEMINI_API_KEY: trimmed });
+            const keysList = trimmed.split(/[,;\s]+/).map((k) => k.trim()).filter((k) => k.length > 0);
+            const primaryKey = keysList[0] || trimmed;
+            const fullKeysStr = keysList.join(",");
+            await context.secretsStores.userSecretsStore.upsert({
+              GEMINI_API_KEY: primaryKey,
+              GEMINI_FREE_API_KEYS: fullKeysStr,
+            });
             try {
               const rootDir = dirname(settingsPath);
               const boxSecretsFile = join(rootDir, "box-secrets.json");
@@ -89,15 +95,21 @@ export function createElectronProductionMainRpcBinding(
                 const parsed = JSON.parse(await readFile(boxSecretsFile, "utf8"));
                 if (parsed && typeof parsed.secrets === "object" && parsed.secrets != null) currentSecrets = parsed.secrets;
               } catch {}
-              currentSecrets.GEMINI_API_KEY = trimmed;
+              currentSecrets.GEMINI_API_KEY = primaryKey;
+              currentSecrets.GEMINI_FREE_API_KEYS = fullKeysStr;
               await writeFile(boxSecretsFile, JSON.stringify({ version: 1, secrets: currentSecrets }, null, 2), { encoding: "utf8", mode: 0o600 });
               const envFile = join(rootDir, ".env");
               let envContent = "";
               try { envContent = await readFile(envFile, "utf8"); } catch {}
               if (!envContent.includes("GEMINI_API_KEY=")) {
-                envContent += "\nGEMINI_API_KEY=" + trimmed + "\n";
+                envContent += "\nGEMINI_API_KEY=" + primaryKey + "\n";
               } else {
-                envContent = envContent.replace(/^GEMINI_API_KEY=.*$/m, "GEMINI_API_KEY=" + trimmed);
+                envContent = envContent.replace(/^GEMINI_API_KEY=.*$/m, "GEMINI_API_KEY=" + primaryKey);
+              }
+              if (!envContent.includes("GEMINI_FREE_API_KEYS=")) {
+                envContent += "GEMINI_FREE_API_KEYS=" + fullKeysStr + "\n";
+              } else {
+                envContent = envContent.replace(/^GEMINI_FREE_API_KEYS=.*$/m, "GEMINI_FREE_API_KEYS=" + fullKeysStr);
               }
               await writeFile(envFile, envContent.trim() + "\n", "utf8");
             } catch {}

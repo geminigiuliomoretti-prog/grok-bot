@@ -7,6 +7,7 @@ import { CoordinateNormalizer, AGENT_DESKTOP_DEFAULT } from "./coordinate-normal
 import { ToolSchemaValidator } from "./tool-schema-validator.js";
 import {
   DEFAULT_SEED_THOUGHT_SIGNATURE,
+  sanitizeGeminiSchema,
   type GeminiNativeStreamOptions,
   type StreamChunk,
   type UsageRecord,
@@ -86,19 +87,6 @@ export class DualFreeLLMRouter {
         return true;
       }
     } catch {}
-
-    // Also check if local oauth credentials file exists and has a refresh token
-    const oauthCredsPath = join(homedir(), ".gemini", "oauth_creds.json");
-    if (existsSync(oauthCredsPath)) {
-      try {
-        const d = JSON.parse(readFileSync(oauthCredsPath, "utf8"));
-        if (d && (d.refresh_token || d.access_token)) {
-          // OAuth credentials exist; proxy can serve or direct token can be used
-          this.engineAHealthy = true;
-          return true;
-        }
-      } catch {}
-    }
 
     this.engineAHealthy = false;
     return false;
@@ -375,10 +363,10 @@ export class DualFreeLLMRouter {
         const useEngineA = attempts[routeAttempt]!;
 
         if (useEngineA) {
-          // Check if Engine A is available
+          // Check if Engine A is available in under 500ms
           const healthy = await self.checkEngineAHealth();
-          if (!healthy && self.routingMode === "hybrid") {
-            // Silently fall back to Engine B without throwing
+          if (!healthy) {
+            // Silently fall back to Engine B without throwing fetch failed
             continue;
           }
         }
@@ -452,11 +440,17 @@ export class DualFreeLLMRouter {
 
     if (options.definitions && options.definitions.length > 0) {
       requestBody.tools = [{
-        functionDeclarations: options.definitions.map((d: any) => ({
-          name: d.name,
-          description: d.description,
-          parameters: d.inputSchema ?? d.parameters,
-        })),
+        functionDeclarations: options.definitions
+          .filter((d: any) => d && typeof d.name === "string" && d.name.length > 0)
+          .map((d: any) => {
+            const rawParams = d.inputSchema ?? d.parameters?.jsonSchema ?? d.parameters;
+            const parameters = rawParams ? sanitizeGeminiSchema(rawParams) : { type: "OBJECT", properties: {} };
+            return {
+              name: d.name,
+              description: d.description,
+              parameters,
+            };
+          }),
       }];
     }
 
@@ -515,45 +509,69 @@ export class DualFreeLLMRouter {
 
     if (options.definitions && options.definitions.length > 0) {
       requestBody.tools = [{
-        functionDeclarations: options.definitions.map((d: any) => ({
-          name: d.name,
-          description: d.description,
-          parameters: d.inputSchema ?? d.parameters,
-        })),
+        functionDeclarations: options.definitions
+          .filter((d: any) => d && typeof d.name === "string" && d.name.length > 0)
+          .map((d: any) => {
+            const rawParams = d.inputSchema ?? d.parameters?.jsonSchema ?? d.parameters;
+            const parameters = rawParams ? sanitizeGeminiSchema(rawParams) : { type: "OBJECT", properties: {} };
+            return {
+              name: d.name,
+              description: d.description,
+              parameters,
+            };
+          }),
       }];
     }
 
-    // Try primary model in pool (e.g. gemma-4-31b-it or fallback to gemini-3.1-flash-lite)
-    const candidateModels = [this.engineBModel, "gemini-3.1-flash-lite", "gemini-flash-lite-latest"];
+    // Candidate models with resilient multi-tier fallback
+    const candidateModels = [
+      this.engineBModel,
+      "gemini-3.1-flash-lite",
+      "gemini-flash-lite-latest",
+      "gemini-3.5-flash-lite",
+    ];
     let lastError: unknown;
 
-    for (const model of candidateModels) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey}&alt=sse`;
-      try {
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(requestBody),
-        });
+    modelLoop: for (const model of candidateModels) {
+      const maxKeyAttempts = Math.max(1, this.keyPool.getStatus().totalKeys);
+      for (let keyAttempt = 0; keyAttempt < maxKeyAttempts; keyAttempt++) {
+        const activeKey = this.keyPool.getNextKey() || options.apiKey;
+        if (!activeKey) throw new Error("No Gemini API key available in key pool or environment.");
 
-        if (!res.ok) {
-          const errText = await res.text().catch(() => "");
-          if (res.status === 429) {
-            this.keyPool.recordRateLimit(apiKey);
-            throw new Error(`Engine B Key Rate Limited (429): ${errText}`);
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${activeKey}&alt=sse`;
+        try {
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(requestBody),
+          });
+
+          if (!res.ok) {
+            const errText = await res.text().catch(() => "");
+            if (res.status === 429) {
+              this.keyPool.recordRateLimit(activeKey);
+              console.warn(`[DualFreeLLMRouter] Key rate limited (429) on model ${model}. Rotating key.`);
+              lastError = new Error(`Engine B Key Rate Limited (429): ${errText}`);
+              continue; // try next key in pool
+            }
+            if (res.status === 404 || res.status >= 500) {
+              console.warn(`[DualFreeLLMRouter] Model ${model} returned ${res.status}. Rotating to next candidate model.`);
+              lastError = new Error(`Model ${model} returned ${res.status}: ${errText}`);
+              continue modelLoop; // try next model candidate
+            }
+            throw new Error(`Engine B (${model}) returned ${res.status}: ${errText}`);
           }
-          if (res.status === 404) {
-            continue; // Model not available, try next candidate
+
+          this.keyPool.recordSuccess(activeKey);
+          yield* this.consumeSseStream(res, model, invocationId, usage, extendedUsage, metadata, resultResponse, options);
+          return;
+        } catch (e: any) {
+          lastError = e;
+          this.keyPool.recordError(activeKey);
+          if (e.message && e.message.includes("429")) {
+            continue; // try next key
           }
-          throw new Error(`Engine B (${model}) returned ${res.status}: ${errText}`);
         }
-
-        this.keyPool.recordSuccess(apiKey);
-        yield* this.consumeSseStream(res, model, invocationId, usage, extendedUsage, metadata, resultResponse, options);
-        return;
-      } catch (e) {
-        lastError = e;
-        this.keyPool.recordError(apiKey);
       }
     }
 

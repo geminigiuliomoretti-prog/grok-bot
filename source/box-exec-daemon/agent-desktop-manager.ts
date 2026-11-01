@@ -128,15 +128,16 @@ export class AgentDesktopManager {
 
   private findChromiumPath(): string {
     const candidates = [
-      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
       "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
       "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+      path.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "Application", "chrome.exe"),
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
     ];
     for (const c of candidates) {
       if (existsSync(c)) return c;
     }
-    return "msedge.exe";
+    return "chrome.exe";
   }
 
   getEnvironment(windowIndex = 1): AgentWindowEnvironment {
@@ -184,6 +185,7 @@ export class AgentDesktopManager {
 
     const exe = this.findChromiumPath();
     const args = [
+      "--headless=new",
       `--remote-debugging-port=${env.cdpPort}`,
       `--user-data-dir=${env.profileDir}`,
       "--window-size=1280,800",
@@ -191,13 +193,14 @@ export class AgentDesktopManager {
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-features=Translate,OptimizationHints",
+      "--hide-scrollbars",
       initialUrl,
     ];
 
     const child = spawn(exe, args, {
       stdio: "pipe",
       detached: false,
-      windowsHide: false,
+      windowsHide: true,
     });
     this.browserProcesses.set(windowIndex, child);
 
