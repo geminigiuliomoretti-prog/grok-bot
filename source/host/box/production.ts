@@ -88,10 +88,11 @@ function createStandaloneProductionBoxInner<
   return {
     ensureReady: async (ctx, agentId) => {
       const primary = await loopback.ensureReady(ctx, agentId);
+      const windowIndex = agentId ? ((Math.abs([...agentId].reduce((a, c) => (a << 5) - a + c.charCodeAt(0), 0)) % 10) + 1) : 1;
       return {
         ...primary,
-        remoteAccessor: withNoMonitorComputerUse(primary.remoteAccessor),
-        vncUrl: "",
+        remoteAccessor: primary.remoteAccessor,
+        vncUrl: `http://127.0.0.1:6080/vnc.html?windowIndex=${windowIndex}`,
       };
     },
     runState: () => loopback.runState(),
@@ -210,19 +211,14 @@ export function createProductionBoxInner<
   if (options.sharedDesktop === false) {
     return createStandaloneProductionBoxInner(
       loopback,
-      accessor => generated.withNoMonitorComputerUse(accessor)
+      accessor => accessor
     );
   }
 
   const composed = applySharedDesktop(loopback, {
     persistAssignments: true,
     gateComputerUse(primary) {
-      return {
-        ...primary,
-        remoteAccessor: generated.withNoMonitorComputerUse(
-          primary.remoteAccessor
-        )
-      };
+      return primary;
     },
     reportPersistFailure(error) {
       reportHostDiagnostic({

@@ -1,3 +1,6 @@
+import { createSandBrowserUseSubagentConfig } from "./runner/tools/sand-browser-use-subagent.js";
+import { createSandComputerUseSubagentConfig } from "./runner/tools/sand-computer-use-subagent.js";
+import { createSandExecutorSubagentConfig } from "./sand-multitask.js";
 import { dirname } from "node:path";
 import { TranscriptMirrorOffloadPool } from "./agent-isolation/transcript-mirror-offload.js";
 import type {
@@ -2302,7 +2305,11 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
       };
       const baseTurn: TurnToolsetTurnInput = {
         autoReviewModes,
-        subagentConfigs: [],
+        subagentConfigs: [
+          createSandComputerUseSubagentConfig({ browserUseOffered: true }),
+          createSandBrowserUseSubagentConfig(),
+          createSandExecutorSubagentConfig(),
+        ] as any,
       };
       const staticModelId = process.env.SAND_AGENT_MODEL ?? DEFAULT_SAND_MODEL;
       const lazyToolHost = () => createProductionTurnToolsetHost({
@@ -2453,7 +2460,7 @@ export function createHostRunnerComposition<Runner extends ProductionSessionBoun
                     summaryArchives: [],
                     turnTimings: [],
                   },
-                  productionTurnRunShell: undefined,
+                  productionTurnRunShell: runnerOptions.productionTurnRunShell,
                 });
                 bindSessionOwnedRunner(child);
                 ownedRunners.add(child);

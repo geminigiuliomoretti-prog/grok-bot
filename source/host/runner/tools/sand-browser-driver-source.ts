@@ -7,7 +7,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 
 const RESULT_MARKER = "__SAND_BROWSER_RESULT__";
-const STATE_DIR = "/tmp/.sand-browser";
+const STATE_DIR = process.platform === "win32" ? (process.env.TEMP || "C:\\tmp") + "\\.sand-browser" : "/tmp/.sand-browser";
 const ACTION_TIMEOUT_MS = 10000;
 const NAVIGATE_TIMEOUT_MS = 25000;
 

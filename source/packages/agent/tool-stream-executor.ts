@@ -63,13 +63,13 @@ type StreamChunk =
   | { readonly type: "reasoning-signature"; readonly signature: string }
   | { readonly type: "tool-call-streaming-start"; readonly toolCallId: string; readonly toolName: string }
   | { readonly type: "tool-call-delta"; readonly toolCallId: string; readonly toolName: string; readonly argsTextDelta: string }
-  | { readonly type: "tool-call"; readonly toolCallId: string; readonly toolName: string; readonly args: unknown };
+  | { readonly type: "tool-call"; readonly toolCallId: string; readonly toolName: string; readonly args: unknown; readonly thoughtSignature?: string };
 
 type AssistantContentPart =
   | { type: "text"; text: string }
   | { type: "reasoning"; text: string; signature?: string; providerOptions?: ProviderOptions }
   | { type: "redacted-reasoning"; data: string; providerOptions?: ProviderOptions }
-  | { type: "tool-call"; toolCallId: string; toolName: string; args: unknown }
+  | { type: "tool-call"; toolCallId: string; toolName: string; args: unknown; thoughtSignature?: string }
   | { type: "file"; [key: string]: unknown };
 
 interface ModelResponse {
@@ -301,6 +301,7 @@ class ToolCallStream {
   toolName: string;
   readonly inner: WritableIterable<string> | undefined;
   written: string;
+  thoughtSignature?: string | undefined;
   private resolveCompletedArgs: (args: unknown) => void;
   private resolveCompletedArgsText: (argsText: string) => void;
   readonly completedArgs: Promise<unknown>;
@@ -310,10 +311,12 @@ class ToolCallStream {
     toolCallId: string,
     toolName: string,
     inner: WritableIterable<string> | undefined,
+    thoughtSignature?: string | undefined,
   ) {
     this.toolCallId = toolCallId;
     this.toolName = toolName;
     this.inner = inner;
+    this.thoughtSignature = thoughtSignature;
     this.written = "";
     this.resolveCompletedArgs = () => {};
     this.resolveCompletedArgsText = () => {};
@@ -979,6 +982,7 @@ function streamModelAndCollectToolCalls(
         toolCallId: stream.toolCallId,
         toolName: stream.toolName,
         args,
+        ...(stream.thoughtSignature ? { thoughtSignature: stream.thoughtSignature } : {}),
       });
       stream.resolveArgs(args);
       stream.resolveArgsText(stream.written);
@@ -1144,6 +1148,7 @@ function streamModelAndCollectToolCalls(
               chunk.toolCallId,
               chunk.toolName,
               emitToolCallEvents ? createWritableIterable<string>() : undefined,
+              (chunk as any).thoughtSignature,
             );
             currentToolCallId = chunk.toolCallId;
             writeToolCallEvent(currentStream);
@@ -1168,6 +1173,7 @@ function streamModelAndCollectToolCalls(
               chunk.toolCallId,
               chunk.toolName,
               emitToolCallEvents ? createWritableIterable<string>() : undefined,
+              (chunk as any).thoughtSignature,
             );
             currentToolCallId = chunk.toolCallId;
             writeToolCallEvent(currentStream);

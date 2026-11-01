@@ -40,13 +40,17 @@ export type StreamChunk = StreamChunkTextDelta | StreamChunkReasoning | StreamCh
 
 const PRIMARY_MODELS = [
   "gemini-3.1-flash-lite",
+  "gemini-flash-latest",
+  "gemini-flash-lite-latest",
+  "gemini-3.5-flash-lite",
   "gemini-3.5-flash",
-  "gemini-3.6-flash",
+  "gemini-3.8-flash",
 ];
 
 const SUMMARIZATION_MODELS = [
   "gemini-3.1-flash-lite",
-  "gemini-3.5-flash",
+  "gemini-flash-lite-latest",
+  "gemini-3.5-flash-lite",
 ];
 
 function deferred<T>() {
@@ -175,28 +179,28 @@ export function convertMessagesToGeminiContents(
             parts.push({ text: part.text });
           } else if (part.type === "tool-call" || part.type === "toolCall" || part.type === "tool_call" || part.toolName) {
             const args = typeof part.args === "string" ? JSON.parse(part.args) : (part.args ?? {});
-            const thoughtSignature =
-              part.thoughtSignature ??
-              part.thought_signature ??
-              "skip_thought_signature_validator";
-            parts.push({
+            const thoughtSig = part.thoughtSignature ?? part.thought_signature;
+            const partObj: Record<string, any> = {
               functionCall: {
                 name: part.toolName || part.name,
                 args,
                 ...(part.toolCallId || part.id ? { id: part.toolCallId || part.id } : {}),
               },
-              thoughtSignature,
-            });
+            };
+            if (typeof thoughtSig === "string" && thoughtSig.length > 0 && thoughtSig !== "skip_thought_signature_validator") {
+              partObj.thoughtSignature = thoughtSig;
+            }
+            parts.push(partObj);
           } else if (part.functionCall || part.function_call) {
             const fn = part.functionCall || part.function_call;
-            const thoughtSignature =
-              part.thoughtSignature ??
-              part.thought_signature ??
-              "skip_thought_signature_validator";
-            parts.push({
+            const thoughtSig = part.thoughtSignature ?? part.thought_signature;
+            const partObj: Record<string, any> = {
               functionCall: fn,
-              thoughtSignature,
-            });
+            };
+            if (typeof thoughtSig === "string" && thoughtSig.length > 0 && thoughtSig !== "skip_thought_signature_validator") {
+              partObj.thoughtSignature = thoughtSig;
+            }
+            parts.push(partObj);
           }
         }
       }
@@ -205,14 +209,18 @@ export function convertMessagesToGeminiContents(
         for (const tc of extraToolCalls) {
           const fn = tc.function || tc;
           const args = typeof fn.arguments === "string" ? JSON.parse(fn.arguments) : (fn.args ?? {});
-          parts.push({
+          const thoughtSig = tc.thoughtSignature ?? tc.thought_signature;
+          const partObj: Record<string, any> = {
             functionCall: {
               name: fn.name,
               args,
               ...(tc.id ? { id: tc.id } : {}),
             },
-            thoughtSignature: tc.thoughtSignature ?? tc.thought_signature ?? "skip_thought_signature_validator",
-          });
+          };
+          if (typeof thoughtSig === "string" && thoughtSig.length > 0 && thoughtSig !== "skip_thought_signature_validator") {
+            partObj.thoughtSignature = thoughtSig;
+          }
+          parts.push(partObj);
         }
       }
       if (parts.length === 0) parts.push({ text: " " });
@@ -343,19 +351,7 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
           if (!res.ok) {
             const errText = await res.text().catch(() => "");
             if (res.status === 429 || res.status === 503) {
-              const isDailyExhausted = /per day|daily|quotaValue:\s*"?20"?/i.test(errText);
-              if (isDailyExhausted) {
-                console.warn(`[gemini-native] Model ${model} daily quota exhausted. Skipping to next model.`);
-                lastError = new Error(`Model ${model} daily quota exhausted: ${errText}`);
-                continue modelLoop;
-              }
-              const delayMs = Math.min(Math.max(600 * (attempt + 1), parseRetryDelayMs(errText)), 2500);
-              console.warn(`[gemini-native] Model ${model} returned ${res.status} (attempt ${attempt + 1}/3). Waiting ${delayMs}ms before retry.`);
-              if (attempt < 2) {
-                await new Promise((r) => setTimeout(r, delayMs));
-                continue;
-              }
-              console.warn(`[gemini-native] Model ${model} exhausted retries on ${res.status}. Falling back to next model.`);
+              console.warn(`[gemini-native] Model ${model} returned ${res.status}. Rotating immediately to next candidate model.`);
               lastError = new Error(`Model ${model} returned ${res.status}: ${errText}`);
               continue modelLoop;
             }
@@ -418,7 +414,7 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
                     const toolName = part.functionCall.name;
                     const toolCallId = part.functionCall.id || `call_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
                     const args = part.functionCall.args ?? {};
-                    const thoughtSignature = partThoughtSig ?? lastThoughtSignature ?? "skip_thought_signature_validator";
+                    const thoughtSignature = partThoughtSig ?? lastThoughtSignature;
 
                     // Normalization for SendMessage: Zod schema requires { type: "text", content: string }
                     if (typeof toolName === "string" && toolName.toLowerCase() === "sendmessage") {
@@ -472,14 +468,12 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
               toolCallId: synthId,
               toolName: "SendMessage",
               args: synthArgs,
-              thoughtSignature: "skip_thought_signature_validator",
             });
             yield {
               type: "tool-call" as const,
               toolCallId: synthId,
               toolName: "SendMessage",
               args: synthArgs,
-              thoughtSignature: "skip_thought_signature_validator",
             };
             hasEmittedToolCall = true;
           }

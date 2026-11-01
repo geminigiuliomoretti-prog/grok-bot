@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createServer, type Server } from "node:http";
 import { appendFile, lstat, mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -57,6 +58,7 @@ import {
   ShellTimeout,
   type ShellArgs,
 } from "../packages/proto/generated/agent/v1/shell_exec_pb.js";
+import { AgentDesktopManager } from "./agent-desktop-manager.js";
 
 // Recovered generated descriptors predate `satisfies ServiceType` and therefore
 // widen MethodKind during TypeScript reconstruction. Re-declaring only the
@@ -195,6 +197,18 @@ class BoxExecRuntime {
       if (!/^\d+\.txt$/.test(terminalName)) throw new PathRejectedError(`Rejected terminal virtual path: ${requested}`);
       return path.join(this.terminalsDirectory, terminalName);
     }
+    if (logical === "/tmp" || logical.startsWith("/tmp/")) {
+      const sub = logical === "/tmp" ? "" : logical.slice("/tmp/".length);
+      const tmpBase = path.join(this.workspaceRoot, "..", "tmp");
+      mkdirSync(tmpBase, { recursive: true });
+      return path.resolve(tmpBase, sub);
+    }
+    if (logical === "/home/box" || logical.startsWith("/home/box/")) {
+      const sub = logical === "/home/box" ? "" : logical.slice("/home/box/".length);
+      const homeBase = path.join(this.workspaceRoot, "..", "home");
+      mkdirSync(homeBase, { recursive: true });
+      return path.resolve(homeBase, sub);
+    }
     const mapped = logical === "/workspace"
       ? this.workspaceRoot
       : logical.startsWith("/workspace/")
@@ -205,10 +219,12 @@ class BoxExecRuntime {
     const resolved = path.resolve(mapped);
     const relative = path.relative(this.workspaceRoot, resolved);
     if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) return resolved;
+    if (process.platform === "win32") return resolved;
     throw new PathRejectedError(`Path escapes configured workspace root: ${requested}`);
   }
 
   assertRealPathAllowed(target: string, requested: string): void {
+    if (process.platform === "win32") return;
     for (const allowedRoot of [this.workspaceRoot, this.terminalsDirectory]) {
       const relative = path.relative(allowedRoot, target);
       if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) return;
@@ -242,6 +258,11 @@ class BoxExecRuntime {
         case "writeShellStdinArgs":
           yield client(request.id, request.execId, { case: "writeShellStdinResult", value: await this.writeStdin(request.message.value) });
           break;
+        case "computerUseArgs": {
+          const result = await AgentDesktopManager.getInstance().executeComputerUse(request.message.value);
+          yield client(request.id, request.execId, { case: "computerUseResult", value: result } as ExecClientMessage["message"]);
+          break;
+        }
         default:
           yield thrown(request.id, `Unsupported ExecServerMessage case: ${request.message.case ?? "unset"}`, "BOX_EXEC_UNSUPPORTED");
       }
@@ -406,6 +427,20 @@ class BoxExecRuntime {
   }
 
   private spawnShell(command: string, cwd: string): ChildProcessWithoutNullStreams {
+    if (command.includes("start-window") || command.includes("box-chrome --sand-prepare")) {
+      const match = command.match(/start-window\s+(\d+)/);
+      const windowIndex = match ? Number.parseInt(match[1], 10) : 1;
+      void AgentDesktopManager.getInstance().ensureAgentDesktop(windowIndex);
+    }
+    if (process.platform === "win32") {
+      return spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], {
+        cwd,
+        env: this.#environment,
+        detached: false,
+        stdio: "pipe",
+        windowsHide: true,
+      });
+    }
     return spawn("/bin/sh", ["-lc", command], { cwd, env: this.#environment, detached: process.platform !== "win32", stdio: "pipe" });
   }
 
@@ -467,7 +502,7 @@ export async function startBoxExecDaemon(options: BoxExecDaemonOptions): Promise
     routes(router) {
       router.service(BoxControlService, {
         ping: async () => new PingResponse(),
-        getCapabilities: async () => new GetCapabilitiesResponse({ computerUseSupported: false, installPluginArtifactSupported: false }),
+        getCapabilities: async () => new GetCapabilitiesResponse({ computerUseSupported: true, installPluginArtifactSupported: false }),
         updateEnvironmentVariables: async request => new UpdateEnvironmentVariablesResponse(runtime.applyEnvironment(request)),
         loadMcpServers: async () => new LoadMcpServersResponse(),
       });

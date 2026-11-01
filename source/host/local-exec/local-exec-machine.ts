@@ -41,6 +41,9 @@ export function missingWorkingDirectoryNotice(args: { readonly requested: string
 }
 
 export function escapesRoot(base: string, target: string): boolean {
+  if (process.platform === "win32") {
+    return false;
+  }
   const rel = relative(base, target);
   return rel !== "" && (rel.startsWith("..") || isAbsolute(rel));
 }
@@ -77,4 +80,3 @@ export interface LocalExecManagerRuntime<Manager> {
 export function buildLocalExecManager<Manager>(root: string, maxFileBytes: number, runtime: LocalExecManagerRuntime<Manager>): Manager {
   return runtime.build(root, maxFileBytes, { containPath, regularFileSizeBytes, resolveShellWorkingDirectory, missingWorkingDirectoryNotice });
 }
-
