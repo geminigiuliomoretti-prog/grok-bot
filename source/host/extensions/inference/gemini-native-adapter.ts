@@ -39,17 +39,14 @@ export interface StreamChunkToolCall {
 export type StreamChunk = StreamChunkTextDelta | StreamChunkReasoning | StreamChunkToolCall;
 
 const PRIMARY_MODELS = [
-  "gemini-3.5-flash-lite",
-  "gemini-3.6-flash",
-  "gemini-3.7-flash",
+  "gemini-3.1-flash-lite",
   "gemini-3.5-flash",
-  "gemini-3.8-flash",
+  "gemini-3.6-flash",
 ];
 
 const SUMMARIZATION_MODELS = [
-  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
   "gemini-3.5-flash",
-  "gemini-3.6-flash",
 ];
 
 function deferred<T>() {
@@ -78,7 +75,8 @@ function parseRetryDelayMs(errText: string): number {
           const match = d.retryDelay.match(/^([\d.]+)(s|ms)$/);
           if (match && typeof match[1] === "string" && typeof match[2] === "string") {
             const val = parseFloat(match[1]);
-            return match[2] === "s" ? Math.round(val * 1000) : Math.round(val);
+            const ms = match[2] === "s" ? Math.round(val * 1000) : Math.round(val);
+            return Math.min(ms, 2500);
           }
         }
       }
@@ -87,7 +85,8 @@ function parseRetryDelayMs(errText: string): number {
   const match = errText.match(/retry\s+in\s+([\d.]+)(s|ms)/i);
   if (match && typeof match[1] === "string" && typeof match[2] === "string") {
     const val = parseFloat(match[1]);
-    return match[2].toLowerCase() === "s" ? Math.round(val * 1000) : Math.round(val);
+    const ms = match[2].toLowerCase() === "s" ? Math.round(val * 1000) : Math.round(val);
+    return Math.min(ms, 2500);
   }
   return 1200;
 }
@@ -171,9 +170,10 @@ export function convertMessagesToGeminiContents(
         if (msg.content.length > 0) parts.push({ text: msg.content });
       } else if (Array.isArray(msg.content)) {
         for (const part of msg.content) {
+          if (!part) continue;
           if (part.type === "text" && typeof part.text === "string" && part.text.length > 0) {
             parts.push({ text: part.text });
-          } else if (part.type === "tool-call") {
+          } else if (part.type === "tool-call" || part.type === "toolCall" || part.type === "tool_call" || part.toolName) {
             const args = typeof part.args === "string" ? JSON.parse(part.args) : (part.args ?? {});
             const thoughtSignature =
               part.thoughtSignature ??
@@ -181,22 +181,38 @@ export function convertMessagesToGeminiContents(
               "skip_thought_signature_validator";
             parts.push({
               functionCall: {
-                name: part.toolName,
+                name: part.toolName || part.name,
                 args,
-                ...(part.toolCallId ? { id: part.toolCallId } : {}),
+                ...(part.toolCallId || part.id ? { id: part.toolCallId || part.id } : {}),
               },
               thoughtSignature,
             });
-          } else if (part.functionCall) {
+          } else if (part.functionCall || part.function_call) {
+            const fn = part.functionCall || part.function_call;
             const thoughtSignature =
               part.thoughtSignature ??
               part.thought_signature ??
               "skip_thought_signature_validator";
             parts.push({
-              functionCall: part.functionCall,
+              functionCall: fn,
               thoughtSignature,
             });
           }
+        }
+      }
+      const extraToolCalls = (msg as any).tool_calls || (msg as any).toolCalls;
+      if (Array.isArray(extraToolCalls)) {
+        for (const tc of extraToolCalls) {
+          const fn = tc.function || tc;
+          const args = typeof fn.arguments === "string" ? JSON.parse(fn.arguments) : (fn.args ?? {});
+          parts.push({
+            functionCall: {
+              name: fn.name,
+              args,
+              ...(tc.id ? { id: tc.id } : {}),
+            },
+            thoughtSignature: tc.thoughtSignature ?? tc.thought_signature ?? "skip_thought_signature_validator",
+          });
         }
       }
       if (parts.length === 0) parts.push({ text: " " });
@@ -327,7 +343,13 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
           if (!res.ok) {
             const errText = await res.text().catch(() => "");
             if (res.status === 429 || res.status === 503) {
-              const delayMs = Math.max(1000 * (attempt + 1), parseRetryDelayMs(errText));
+              const isDailyExhausted = /per day|daily|quotaValue:\s*"?20"?/i.test(errText);
+              if (isDailyExhausted) {
+                console.warn(`[gemini-native] Model ${model} daily quota exhausted. Skipping to next model.`);
+                lastError = new Error(`Model ${model} daily quota exhausted: ${errText}`);
+                continue modelLoop;
+              }
+              const delayMs = Math.min(Math.max(600 * (attempt + 1), parseRetryDelayMs(errText)), 2500);
               console.warn(`[gemini-native] Model ${model} returned ${res.status} (attempt ${attempt + 1}/3). Waiting ${delayMs}ms before retry.`);
               if (attempt < 2) {
                 await new Promise((r) => setTimeout(r, delayMs));
@@ -396,7 +418,7 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
                     const toolName = part.functionCall.name;
                     const toolCallId = part.functionCall.id || `call_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
                     const args = part.functionCall.args ?? {};
-                    const thoughtSignature = partThoughtSig ?? lastThoughtSignature;
+                    const thoughtSignature = partThoughtSig ?? lastThoughtSignature ?? "skip_thought_signature_validator";
 
                     // Normalization for SendMessage: Zod schema requires { type: "text", content: string }
                     if (typeof toolName === "string" && toolName.toLowerCase() === "sendmessage") {
@@ -521,8 +543,13 @@ export function executeGeminiNativeStream(options: GeminiNativeStreamOptions) {
           break modelLoop;
         } catch (err) {
           lastError = err;
-          if (attempt < 2 && err instanceof Error && (err.message.includes("429") || err.message.includes("503") || err.message.includes("fetch failed"))) {
-            await new Promise((r) => setTimeout(r, 1200 * (attempt + 1)));
+          const msg = err instanceof Error ? err.message : String(err);
+          if (/per day|daily|quotaValue:\s*"?20"?/i.test(msg)) {
+            console.warn(`[gemini-native] Model ${model} daily quota exhausted. Skipping to next model.`);
+            continue modelLoop;
+          }
+          if (attempt < 2 && (msg.includes("429") || msg.includes("503") || msg.includes("fetch failed"))) {
+            await new Promise((r) => setTimeout(r, 1000));
             continue;
           }
           console.warn(`[gemini-native] Attempt with ${model} failed:`, err);

@@ -1,3 +1,5 @@
+import { existsSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { isSandAgentModelSelection, resolveComputerUseModelSelection } from "../shared/agents/sand-agent-model.js";
 import { normalizeSandAutoReviewInstructions } from "../shared/sand-auto-review-instructions.js";
 import { isSandLocalToolAction, normalizeSandLocalToolPermission } from "../shared/local-tool-permission.js";
@@ -124,7 +126,7 @@ export function createMainEdgeHandlers(deps: MainEdgeDeps): HandlerMap {
     getEgressTunnelStatus: () => invoke(egressController(deps), "getStatus"),
     getWebauthnProxyEnabled: () => invoke(deps.boxToggleStore, "getWebauthnProxyEnabled"),
     setWebauthnProxyEnabled: async (raw) => { const enabled = req(raw).enabled === true; invoke(deps.boxToggleStore, "setWebauthnProxyEnabled", enabled); deps.emitWebauthnProxyChanged(enabled); const mirrored = sandWebauthnProxyMirroredEnablement(enabled, deps.platform); for (let attempt = 0; attempt < 3; attempt += 1) { const applied = await deps.syncHostSettingsToBox({ webauthnProxyEnabled: mirrored }); if (applied?.webauthnProxyEnabled === mirrored) break; await (deps.delay ?? sleep)(250 * (attempt + 1)); } return invoke(deps.boxToggleStore, "getWebauthnProxyEnabled"); },
-    getOnboardingSeen: async () => await Promise.resolve(invoke(deps.onboardingSeen, "reconcile")) === true,
+    getOnboardingSeen: async () => { try { const settingsPath = String(Reflect.get(deps.settingsStore, "settingsPath")); const agentsDir = join(dirname(settingsPath), "agents"); if (existsSync(agentsDir)) { const entries = readdirSync(agentsDir).filter((name: string) => !name.endsWith(".json") && !name.endsWith(".db")); if (entries.length > 0) return true; } } catch {} return await Promise.resolve(invoke(deps.onboardingSeen, "reconcile")) === true; },
     setOnboardingSeen: async (raw) => {
       const seen = req(raw).seen;
       invariant(typeof seen === "boolean", "Onboarding completion must be boolean.");

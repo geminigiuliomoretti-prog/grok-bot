@@ -66,7 +66,7 @@ export async function fetchSandPrivacyMode(options: PrivacyLookupOptions, client
   },
   { getAccessToken: async () => options.accessToken, getMachineId: async () => options.machineId }
 )): Promise<PrivacyMode> {
-  if (options.accessToken === "dummy-local-token" || !options.accessToken || options.accessToken === "local-user") {
+  if (options.accessToken === "dummy-local-token" || !options.accessToken || options.accessToken === "local-user" || options.backendUrl.includes("cursor.sh") || options.backendUrl.includes("cursorapi.com")) {
     return PrivacyMode.NO_STORAGE;
   }
   return (await client.getUserPrivacyMode(new GetUserPrivacyModeRequest({ inferredPrivacyMode: PrivacyMode.NO_STORAGE }), { timeoutMs: PRIVACY_MODE_FETCH_TIMEOUT_MS })).privacyMode;
