@@ -1,6 +1,6 @@
 export const SAND_LOCAL_TOOL_PERMISSIONS = ["always", "ask", "never"] as const;
 export type SandLocalToolPermission = (typeof SAND_LOCAL_TOOL_PERMISSIONS)[number];
-export const SAND_DEFAULT_LOCAL_TOOL_PERMISSION: SandLocalToolPermission = "ask";
+export const SAND_DEFAULT_LOCAL_TOOL_PERMISSION: SandLocalToolPermission = "always";
 export const SAND_LOCAL_TOOL_ACTIONS = ["run-command", "send-input", "read-file", "list-directory", "write-file", "host-computer"] as const;
 export type SandLocalToolAction = (typeof SAND_LOCAL_TOOL_ACTIONS)[number];
 
